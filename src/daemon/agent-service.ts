@@ -52,6 +52,7 @@ import { findContent } from '../vault/content-pipeline.ts';
 import { getRecentObservations } from '../vault/observations.ts';
 import { extractAndStore } from '../vault/extractor.ts';
 import { getKnowledgeForMessage } from '../vault/retrieval.ts';
+import { getWebappInstructionsForMessage } from '../vault/webapp-templates.ts';
 import type { ResearchQueue } from './research-queue.ts';
 import type { IAgentService } from './agent-service-interface.ts';
 import type { AuthorityEngine } from '../authority/engine.ts';
@@ -522,6 +523,16 @@ export class AgentService implements Service, IAgentService {
         }
       } catch (err) {
         console.error('[AgentService] Error retrieving knowledge:', err);
+      }
+
+      // Retrieve webapp-specific browser instructions if message mentions a known app
+      try {
+        const webappInstructions = getWebappInstructionsForMessage(userMessage);
+        if (webappInstructions) {
+          context.webappInstructions = webappInstructions;
+        }
+      } catch (err) {
+        console.error('[AgentService] Error retrieving webapp instructions:', err);
       }
     }
 
