@@ -607,7 +607,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
         const keepaliveSupported = process.platform === 'darwin' || process.platform === 'linux';
         return json({
           platform: process.platform,
-          manager: getAutostartName(),
+          manager: keepaliveSupported ? getAutostartName() : 'unsupported',
           installed,
           keepalive_supported: keepaliveSupported,
           restart_supported: keepaliveSupported && installed,
