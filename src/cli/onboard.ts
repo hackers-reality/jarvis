@@ -6,7 +6,7 @@
  * All steps are skippable except LLM configuration.
  */
 
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
 import {
@@ -17,10 +17,13 @@ import { DEFAULT_CONFIG, type JarvisConfig } from '../config/types.ts';
 import { loadConfig, saveConfig } from '../config/loader.ts';
 import { installAutostart, startAutostartService, getAutostartName, isAutostartSupported } from './autostart.ts';
 import { runDependencyCheck } from './deps.ts';
+import { initDatabase, closeDb } from '../vault/schema.ts';
+import { saveUserProfile } from '../vault/user-profile.ts';
+import { USER_PROFILE_QUESTIONS, normalizeUserProfileAnswers } from '../user/profile.ts';
 
 const JARVIS_DIR = join(homedir(), '.jarvis');
 const CONFIG_PATH = join(JARVIS_DIR, 'config.yaml');
-const TOTAL_STEPS = 10;
+const TOTAL_STEPS = 11;
 
 export async function runOnboard(): Promise<void> {
   printBanner();
@@ -578,7 +581,7 @@ export async function runOnboard(): Promise<void> {
     printInfo(`Using defaults: level ${config.authority.default_level}, governed: ${config.authority.governed_categories.join(', ')}`);
   }
 
-  // ── Step 10: Autostart ────────────────────────────────────────────
+  // ── Step 10: Keepalive ────────────────────────────────────────────
 
   printStep(10, TOTAL_STEPS, 'Keepalive');
   const platform = detectPlatform();
@@ -603,6 +606,41 @@ export async function runOnboard(): Promise<void> {
       console.log(`  Autostart mechanism: ${c.bold(getAutostartName())}\n`);
       enableKeepalive = await askYesNo('Start JARVIS automatically?', false);
     }
+  }
+
+  // ── Port (quick inline question) ──────────────────────────────────
+
+  // ── Step 11: Know Your User ───────────────────────────────────────
+
+  printStep(11, TOTAL_STEPS, 'Know Your User');
+  console.log('  Optional: answer a richer profile wizard so JARVIS starts with context about who you are,\n' +
+    '  what you care about, and how you like to work.\n');
+
+  let userProfileAnswers: Record<string, string> | null = null;
+  const runProfileWizard = await askYesNo('Answer user profile questions now?', false);
+  if (runProfileWizard) {
+    const rawAnswers: Record<string, string> = {};
+
+    for (const question of USER_PROFILE_QUESTIONS) {
+      console.log('');
+      console.log(c.bold(`  ${question.step_title} · ${question.label}`));
+      console.log(c.dim(`  ${question.description}`));
+
+      const defaultAnswer =
+        question.id === 'preferred_name'
+          ? (config.user?.name || '')
+          : '';
+
+      const answer = await ask(question.prompt, defaultAnswer);
+      if (answer.trim()) {
+        rawAnswers[question.id] = answer.trim();
+      }
+    }
+
+    userProfileAnswers = normalizeUserProfileAnswers(rawAnswers) as Record<string, string>;
+    printOk(`Captured ${Object.keys(userProfileAnswers).length} profile answer(s).`);
+  } else {
+    printInfo('Skipped. You can complete the same wizard later in Settings > Profile.');
   }
 
   // ── Port (quick inline question) ──────────────────────────────────
@@ -645,6 +683,7 @@ export async function runOnboard(): Promise<void> {
   console.log('');
 
   const doSave = await askYesNo('Save this configuration?', true);
+  let keepaliveStarted = false;
   if (doSave) {
     await saveConfig(config);
     printOk(`Config saved to ${CONFIG_PATH}`);
@@ -652,7 +691,20 @@ export async function runOnboard(): Promise<void> {
     if (enableKeepalive) {
       const installed = await installAutostart();
       if (installed) {
-        await startAutostartService();
+        keepaliveStarted = await startAutostartService();
+      }
+    }
+
+    if (userProfileAnswers && Object.keys(userProfileAnswers).length > 0) {
+      try {
+        initDatabase(resolveOnboardDbPath(config));
+        saveUserProfile(userProfileAnswers);
+        printOk('User profile saved to the vault.');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        printWarn(`Config was saved, but user profile could not be stored: ${msg}`);
+      } finally {
+        closeDb();
       }
     }
   } else {
@@ -661,7 +713,7 @@ export async function runOnboard(): Promise<void> {
 
   // Offer to start daemon
   console.log('');
-  const keepaliveActive = doSave && enableKeepalive;
+  const keepaliveActive = doSave && keepaliveStarted;
   const defaultStartNow = keepaliveActive ? false : true;
   const startNowPrompt = keepaliveActive
     ? 'Start another foreground JARVIS process now?'
@@ -681,4 +733,17 @@ export async function runOnboard(): Promise<void> {
     }
     closeRL();
   }
+}
+
+function expandHome(filepath: string): string {
+  if (filepath.startsWith('~/')) {
+    return join(homedir(), filepath.slice(2));
+  }
+  return filepath;
+}
+
+function resolveOnboardDbPath(config: JarvisConfig): string {
+  const dataDir = expandHome(config.daemon.data_dir);
+  const dbPath = expandHome(config.daemon.db_path);
+  return isAbsolute(dbPath) ? dbPath : join(dataDir, dbPath);
 }

@@ -8,6 +8,7 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { Buffer } from 'node:buffer';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { c, printOk, printErr, printWarn } from './helpers.ts';
 
@@ -204,12 +205,6 @@ async function installLaunchd(): Promise<boolean> {
 
     writeFileSync(LAUNCHD_PLIST, generateLaunchdPlist(), 'utf-8');
 
-    // Load the plist
-    const load = Bun.spawnSync(['launchctl', 'load', LAUNCHD_PLIST]);
-    if (load.exitCode !== 0) {
-      printWarn('Could not load plist immediately. It will start on next login.');
-    }
-
     printOk(`Installed launchd plist: ${LAUNCHD_PLIST}`);
     printOk('Service will restart automatically and stay running after the terminal closes.');
     return true;
@@ -219,15 +214,56 @@ async function installLaunchd(): Promise<boolean> {
   }
 }
 
+function decodeLaunchctlOutput(output: Uint8Array | ArrayBuffer | null | undefined): string {
+  if (!output) {
+    return '';
+  }
+
+  try {
+    if (output instanceof Uint8Array) {
+      return Buffer.from(output).toString('utf8');
+    }
+    return Buffer.from(new Uint8Array(output)).toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function isLaunchdAlreadyLoaded(
+  result: { exitCode: number; stdout?: Uint8Array | ArrayBuffer | null; stderr?: Uint8Array | ArrayBuffer | null },
+): boolean {
+  if (result.exitCode === 0) {
+    return false;
+  }
+
+  const combinedOutput = `${decodeLaunchctlOutput(result.stdout)}\n${decodeLaunchctlOutput(result.stderr)}`.toLowerCase();
+  return (
+    combinedOutput.includes('already loaded') ||
+    combinedOutput.includes('service already loaded') ||
+    combinedOutput.includes('already bootstrapped') ||
+    combinedOutput.includes('service already exists')
+  );
+}
+
 async function startLaunchdService(): Promise<boolean> {
   try {
-    const bootstrap = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${process.getuid?.() ?? ''}`, LAUNCHD_PLIST]);
-    if (bootstrap.exitCode !== 0) {
-      const load = Bun.spawnSync(['launchctl', 'load', LAUNCHD_PLIST]);
-      if (load.exitCode !== 0) {
-        printWarn('Installed launchd plist, but could not start it immediately. It should start on next login.');
-        return false;
+    const getuid = process.getuid;
+    const uid = typeof getuid === 'function' ? getuid.call(process) : undefined;
+
+    if (typeof uid === 'number') {
+      const bootstrap = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${uid}`, LAUNCHD_PLIST]);
+      if (bootstrap.exitCode === 0 || isLaunchdAlreadyLoaded(bootstrap)) {
+        printOk('JARVIS launch agent is running.');
+        return true;
       }
+    } else {
+      printWarn('Could not determine the current user UID; skipping launchctl bootstrap and falling back to launchctl load.');
+    }
+
+    const load = Bun.spawnSync(['launchctl', 'load', LAUNCHD_PLIST]);
+    if (load.exitCode !== 0 && !isLaunchdAlreadyLoaded(load)) {
+      printWarn('Installed launchd plist, but could not start it immediately. It should start on next login.');
+      return false;
     }
 
     printOk('JARVIS launch agent is running.');
