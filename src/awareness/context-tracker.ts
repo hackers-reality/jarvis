@@ -6,7 +6,7 @@
  */
 
 import type { AwarenessConfig } from '../config/types.ts';
-import type { ScreenContext, AwarenessEvent } from './types.ts';
+import type { ScreenContext, AwarenessEvent, DashboardDetection } from './types.ts';
 import { createSession, endSession, incrementSessionCaptureCount, updateSession } from '../vault/awareness.ts';
 import { generateId } from '../vault/schema.ts';
 import { StruggleDetector } from './struggle-detector.ts';
@@ -54,7 +54,7 @@ export class ContextTracker {
   /**
    * Process a new screen capture. Returns the context and any detected events.
    */
-  processCapture(captureId: string, ocrText: string, rawWindowTitle?: string): {
+  processCapture(captureId: string, ocrText: string, rawWindowTitle?: string, dashboardDetection?: DashboardDetection): {
     context: ScreenContext;
     events: AwarenessEvent[];
   } {
@@ -123,6 +123,43 @@ export class ContextTracker {
       this.sameWindowSince = now;
       this.lastOcrTextHash = '';
       this.struggleDetector.reset();
+    }
+
+    // Self-suppression: when viewing own dashboard, skip problem detection
+    if (dashboardDetection?.isDashboard) {
+      events.push({
+        type: 'dashboard_detected',
+        data: {
+          page: dashboardDetection.currentPage?.id ?? 'unknown',
+          pageLabel: dashboardDetection.currentPage?.label ?? 'Unknown',
+          confidence: dashboardDetection.confidence,
+          visiblePanels: dashboardDetection.visiblePanels,
+          visibleElements: dashboardDetection.visibleElements,
+        },
+        timestamp: now,
+      });
+
+      // Reset struggle detector to avoid carryover from previous app
+      this.struggleDetector.reset();
+
+      const context: ScreenContext = {
+        captureId,
+        timestamp: now,
+        appName,
+        windowTitle,
+        url,
+        filePath,
+        ocrText,
+        sessionId: this.currentSessionId!,
+        isSignificantChange,
+        dashboardInfo: dashboardDetection,
+      };
+
+      this.previousContext = this.currentContext;
+      this.currentContext = context;
+      this.lastActivityTimestamp = now;
+
+      return { context, events };
     }
 
     // Track same-window duration for stuck detection

@@ -10,7 +10,7 @@
 import type { Service, ServiceStatus } from '../daemon/services.ts';
 import type { JarvisConfig, AwarenessConfig } from '../config/types.ts';
 import type { LLMManager } from '../llm/manager.ts';
-import type { AwarenessEvent, LiveContext, DailyReport, Suggestion, SessionSummary, WeeklyReport, BehavioralInsight } from './types.ts';
+import type { AwarenessEvent, LiveContext, DailyReport, Suggestion, SessionSummary, WeeklyReport, BehavioralInsight, DashboardDescriptor } from './types.ts';
 import type { SuggestionType, SuggestionRow } from './types.ts';
 import type { SidecarEvent, BinaryDataInline } from '../sidecar/protocol.ts';
 
@@ -20,6 +20,8 @@ import { AwarenessIntelligence } from './intelligence.ts';
 import { SuggestionEngine } from './suggestion-engine.ts';
 import { ContextGraph } from './context-graph.ts';
 import { BehaviorAnalytics } from './analytics.ts';
+import { DashboardRecognizer } from './dashboard-recognizer.ts';
+import { DASHBOARD_DESCRIPTOR } from './dashboard-descriptor-data.ts';
 import {
   createCapture,
   getCapturesForSession,
@@ -55,6 +57,7 @@ export class AwarenessService implements Service {
   private suggestionEngine: SuggestionEngine;
   private contextGraph: ContextGraph;
   private analytics: BehaviorAnalytics;
+  private dashboardRecognizer: DashboardRecognizer;
   private llm: LLMManager;
   private eventCallback: ((event: AwarenessEvent) => void) | null;
   private enabled: boolean;
@@ -90,6 +93,10 @@ export class AwarenessService implements Service {
     });
     this.contextGraph = new ContextGraph();
     this.analytics = new BehaviorAnalytics(llm);
+    this.dashboardRecognizer = new DashboardRecognizer(
+      DASHBOARD_DESCRIPTOR,
+      jarvisConfig.daemon.port
+    );
   }
 
   async start(): Promise<void> {
@@ -194,6 +201,10 @@ export class AwarenessService implements Service {
 
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  getDashboardDescriptor(): DashboardDescriptor {
+    return this.dashboardRecognizer.getDescriptor();
   }
 
   // ── Sidecar Event Handler ──
@@ -388,10 +399,18 @@ export class AwarenessService implements Service {
       // Use window title from capture source (PowerShell/sidecar), fall back to tracker state
       const windowTitle = data.windowTitle || this.contextTracker.getLastWindowTitle();
 
+      // 2a. Dashboard self-recognition — check if we're looking at our own UI
+      const dashboardDetection = this.dashboardRecognizer.analyze(
+        ocrText,
+        windowTitle ?? '',
+        null // URL is extracted from OCR by context tracker
+      );
+
       const { context, events } = this.contextTracker.processCapture(
         data.captureId,
         ocrText,
-        windowTitle
+        windowTitle,
+        dashboardDetection
       );
 
       // 3. Entity linking
@@ -427,9 +446,9 @@ export class AwarenessService implements Service {
         });
       } catch { /* observation storage is best-effort */ }
 
-      // 6. Cloud vision escalation (async, non-blocking)
+      // 6. Cloud vision escalation (async, non-blocking) — skip when viewing own dashboard
       let cloudAnalysis: string | undefined;
-      if (this.config.cloud_vision_enabled && this.intelligence.shouldEscalateToCloud(context, events)) {
+      if (this.config.cloud_vision_enabled && !context.dashboardInfo?.isDashboard && this.intelligence.shouldEscalateToCloud(context, events)) {
         const base64 = data.imageBuffer.toString('base64');
 
         const struggleEvent = events.find(e => e.type === 'struggle_detected');

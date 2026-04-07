@@ -18,6 +18,7 @@ import type { BinaryDataInline } from '../../sidecar/protocol.ts';
 import { routeToSidecar, routeToSidecarRaw } from './sidecar-route.ts';
 import { listSidecarsTool } from './sidecar-list.ts';
 import { DESKTOP_TOOLS } from './desktop.ts';
+import { createDashboardNavTool } from './dashboard-nav.ts';
 
 const terminal = new TerminalExecutor({ timeout: 30000 });
 
@@ -787,6 +788,7 @@ export const BUILTIN_TOOLS: ToolDefinition[] = [
   browserScrollTool,
   browserEvaluateTool,
   browserScreenshotTool,
+  createDashboardNavTool(),
   ...DESKTOP_TOOLS,
 ];
 

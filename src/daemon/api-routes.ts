@@ -1648,6 +1648,18 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
       },
     },
 
+    // --- Dashboard Descriptor ---
+    '/api/dashboard/descriptor': {
+      GET: () => {
+        if (ctx.awarenessService) {
+          return json(ctx.awarenessService.getDashboardDescriptor());
+        }
+        // Fallback: return static descriptor directly
+        const { DASHBOARD_DESCRIPTOR } = require('../awareness/dashboard-descriptor-data.ts');
+        return json(DASHBOARD_DESCRIPTOR);
+      },
+    },
+
     // --- Awareness (M13) ---
     '/api/awareness/status': {
       GET: () => {

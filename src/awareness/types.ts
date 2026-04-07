@@ -31,6 +31,7 @@ export type ScreenContext = {
   ocrText: string;
   sessionId: string;
   isSignificantChange: boolean;
+  dashboardInfo?: DashboardDetection | null;
 };
 
 // ── Events ──
@@ -42,7 +43,8 @@ export type AwarenessEventType =
   | 'struggle_detected'
   | 'session_started'
   | 'session_ended'
-  | 'suggestion_ready';
+  | 'suggestion_ready'
+  | 'dashboard_detected';
 
 export type AwarenessEvent = {
   type: AwarenessEventType;
@@ -60,7 +62,8 @@ export type SuggestionType =
   | 'knowledge'
   | 'schedule'
   | 'break'
-  | 'general';
+  | 'general'
+  | 'dashboard_help';
 
 export type Suggestion = {
   id: string;
@@ -198,4 +201,47 @@ export type SuggestionRow = {
   dismissed: number;
   acted_on: number;
   created_at: number;
+};
+
+// ── Dashboard Self-Recognition ──
+
+export type DashboardPage = {
+  id: string;
+  label: string;
+  path: string;
+  description: string;
+  ocrFingerprints?: string[];
+  navSelector?: string;
+  panels: DashboardPanel[];
+};
+
+export type DashboardPanel = {
+  id: string;
+  label: string;
+  description: string;
+  elements: DashboardElement[];
+};
+
+export type DashboardElement = {
+  id: string;
+  type: 'button' | 'input' | 'tab' | 'toggle' | 'list' | 'chart' | 'panel';
+  label: string;
+  description: string;
+  selector?: string;
+};
+
+export type DashboardDescriptor = {
+  version: string;
+  baseUrl: string;
+  pages: DashboardPage[];
+  generatedAt: number;
+};
+
+export type DashboardDetection = {
+  isDashboard: boolean;
+  confidence: 'url' | 'title' | 'ocr' | 'none';
+  currentPage: DashboardPage | null;
+  visiblePanels: string[];
+  visibleElements: string[];
+  matchedOcrPatterns: string[];
 };

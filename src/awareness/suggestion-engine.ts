@@ -28,6 +28,7 @@ const TYPE_RATE_LIMITS: Record<string, number> = {
   schedule: 300_000,   // 5min — calendar events don't change fast
   break: 600_000,      // 10min — break reminders shouldn't nag
   general: 60_000,     // 1min — cloud insight
+  dashboard_help: 120_000, // 2min — don't nag about every page view
 };
 
 export class SuggestionEngine {
@@ -69,6 +70,7 @@ export class SuggestionEngine {
       this.checkError(context, events),
       this.checkStruggle(context, events, cloudAnalysis),
       this.checkStuck(context, events),
+      this.checkDashboardHelp(context, events),
       this.checkAutomation(context, events),
       this.checkKnowledge(context, events),
       null, // placeholder for async schedule
@@ -449,6 +451,95 @@ export class SuggestionEngine {
       body: cloudAnalysis.slice(0, 300),
       triggerCaptureId: context.captureId,
       context: { appName: context.appName, source: 'cloud_vision' },
+    };
+  }
+
+  /**
+   * Check if user is viewing the JARVIS dashboard and offer contextual help.
+   */
+  private checkDashboardHelp(context: ScreenContext, events: AwarenessEvent[]): Suggestion | null {
+    const dashEvent = events.find(e => e.type === 'dashboard_detected');
+    if (!dashEvent) return null;
+
+    const dashInfo = context.dashboardInfo;
+    if (!dashInfo?.currentPage) return null;
+
+    const pageId = dashInfo.currentPage.id;
+
+    const helpMap: Record<string, { title: string; body: string }> = {
+      dashboard: {
+        title: "I see you're on my Dashboard",
+        body: "This is my main overview. Want me to explain any of the panels, check system health in detail, or navigate to a specific section?",
+      },
+      chat: {
+        title: "Ready to chat",
+        body: "Just type or speak your request. I can help with code, research, file management, automation, and more.",
+      },
+      goals: {
+        title: "Viewing Goals",
+        body: "Want me to help create a new goal, review progress on existing objectives, or suggest next actions?",
+      },
+      workflows: {
+        title: "Workflow Builder open",
+        body: "I can help create a new workflow, suggest automations based on your patterns, or debug an existing one.",
+      },
+      office: {
+        title: "Agent Management",
+        body: "I can spawn a specialist agent for a specific task, or give you a status update on active agents.",
+      },
+      tasks: {
+        title: "Task Board open",
+        body: "Want me to create a new task, reassign priorities, or summarize what's pending?",
+      },
+      authority: {
+        title: "Authority & Governance",
+        body: "I can help review pending approvals, explain audit entries, or adjust authority levels.",
+      },
+      memory: {
+        title: "Memory Explorer",
+        body: "Want me to search for a specific entity, show connections between concepts, or add new knowledge?",
+      },
+      pipeline: {
+        title: "Content Pipeline",
+        body: "I can help move content through stages, create new content items, or summarize pipeline status.",
+      },
+      calendar: {
+        title: "Calendar View",
+        body: "Want me to check upcoming events, schedule something, or summarize this week's agenda?",
+      },
+      knowledge: {
+        title: "Knowledge Browser",
+        body: "I can help search entities, explore relationships, or add new facts to the knowledge graph.",
+      },
+      command: {
+        title: "Command Center",
+        body: "I can give you a detailed health report, explain any service status, or investigate issues.",
+      },
+      awareness: {
+        title: "Awareness System",
+        body: "This is my screen awareness panel. Want me to generate a productivity report, analyze focus patterns, or adjust settings?",
+      },
+      settings: {
+        title: "Settings open",
+        body: "Need help configuring something? I can walk you through LLM providers, communication channels, or sidecar setup.",
+      },
+    };
+
+    const pageHelp = helpMap[pageId];
+    if (!pageHelp) return null;
+
+    return {
+      id: '',
+      type: 'dashboard_help',
+      title: pageHelp.title,
+      body: pageHelp.body,
+      triggerCaptureId: context.captureId,
+      context: {
+        page: pageId,
+        pageLabel: dashInfo.currentPage.label,
+        visiblePanels: dashInfo.visiblePanels,
+        confidence: dashInfo.confidence,
+      },
     };
   }
 
