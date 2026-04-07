@@ -105,6 +105,11 @@ import {
   getCapturesInRange,
 } from '../vault/awareness.ts';
 import type { SuggestionType } from '../awareness/types.ts';
+import {
+  dismissUpdate,
+  getUpdateStatus,
+  startUpdateJob,
+} from './update-manager.ts';
 
 export type ApiContext = {
   healthMonitor: HealthMonitor;
@@ -780,6 +785,34 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
       },
     },
 
+    '/api/system/update': {
+      GET: async (req: Request) => {
+        const params = getSearchParams(req);
+        const refresh = params.get('refresh') === '1';
+        return json(await getUpdateStatus(refresh));
+      },
+      POST: async () => {
+        const result = await startUpdateJob();
+        if (!result.ok) return error(result.message, 409);
+        return json(result);
+      },
+    },
+
+    '/api/system/update/dismiss': {
+      POST: async (req: Request) => {
+        let body: { version?: string };
+        try {
+          body = await req.json() as { version?: string };
+        } catch {
+          return error('Invalid JSON in request body.', 400);
+        }
+        const status = await getUpdateStatus(false);
+        const version = body.version ?? status.latest_version;
+        if (!version) return error('No update version is available to dismiss.');
+        dismissUpdate(version);
+        return json({ ok: true, message: `Dismissed update ${version}.` });
+      },
+    },
     // --- LLM Configuration (DB + encrypted keychain) ---
     '/api/config/llm': {
       GET: async () => {

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../hooks/useApi";
 import type { ChatMessage, AgentActivityEvent, GoalEvent, WorkflowEvent } from "../hooks/useWebSocket";
 import type { UseVoiceReturn } from "../hooks/useVoice";
+import type { UpdateInfo } from "../types/update";
 import "../styles/dashboard.css";
 
 /* ================================================================
@@ -974,6 +975,38 @@ function GoalsPanel({ goals }: { goals: GoalData[] }) {
   );
 }
 
+function UpdateToast({
+  update,
+  onDismiss,
+  onUpdate,
+  busy,
+}: {
+  update: UpdateInfo;
+  onDismiss: () => void;
+  onUpdate: () => void;
+  busy: boolean;
+}) {
+  if (!update.latest_version) return null;
+
+  return (
+    <div className="db-update-toast" role="status" aria-live="polite" aria-label="JARVIS update available">
+      <div className="db-update-toast-eyebrow">Release Update</div>
+      <div className="db-update-toast-title">JARVIS {update.latest_version} is available.</div>
+      <div className="db-update-toast-copy">
+        A newer GitHub release was found. Update now to install {update.latest_version}.
+      </div>
+      <div className="db-update-toast-actions">
+        <button className="db-update-toast-btn db-update-toast-btn-secondary" onClick={onDismiss}>
+          Not now
+        </button>
+        <button className="db-update-toast-btn db-update-toast-btn-primary" onClick={onUpdate} disabled={busy}>
+          {busy ? "Updating..." : "Update"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ================================================================
    DASHBOARD PAGE — root export, data fetching
    ================================================================ */
@@ -984,6 +1017,15 @@ export default function DashboardPage({ messages, isConnected, voice, agentActiv
   const [entityCount, setEntityCount] = useState(0);
   const [goals, setGoals] = useState<GoalData[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowData[]>([]);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+
+  const fetchUpdateInfo = useCallback(async (refresh = false) => {
+    try {
+      const data = await api<UpdateInfo>(`/api/system/update${refresh ? "?refresh=1" : ""}`);
+      setUpdateInfo(data);
+    } catch { /* keep previous */ }
+  }, []);
 
   // Fetch agents (poll every 5s)
   const fetchAgents = useCallback(async () => {
@@ -1033,19 +1075,22 @@ export default function DashboardPage({ messages, isConnected, voice, agentActiv
     fetchEntities();
     fetchGoals();
     fetchWorkflows();
-  }, [fetchAgents, fetchHealth, fetchEntities, fetchGoals, fetchWorkflows]);
+    fetchUpdateInfo();
+  }, [fetchAgents, fetchHealth, fetchEntities, fetchGoals, fetchWorkflows, fetchUpdateInfo]);
 
   // Polling intervals
   useEffect(() => {
     const agentIv = setInterval(fetchAgents, 5000);
     const healthIv = setInterval(fetchHealth, 10000);
     const entityIv = setInterval(fetchEntities, 30000);
+    const updateIv = setInterval(() => { fetchUpdateInfo(false); }, 60000);
     return () => {
       clearInterval(agentIv);
       clearInterval(healthIv);
       clearInterval(entityIv);
+      clearInterval(updateIv);
     };
-  }, [fetchAgents, fetchHealth, fetchEntities]);
+  }, [fetchAgents, fetchHealth, fetchEntities, fetchUpdateInfo]);
 
   // Re-fetch on WS events
   useEffect(() => {
@@ -1056,9 +1101,42 @@ export default function DashboardPage({ messages, isConnected, voice, agentActiv
     if (workflowEvents.length > 0) fetchWorkflows();
   }, [workflowEvents.length, fetchWorkflows]);
 
+  const dismissUpdate = useCallback(async () => {
+    if (!updateInfo?.latest_version) return;
+    try {
+      await api<{ ok: boolean; message: string }>("/api/system/update/dismiss", {
+        method: "POST",
+        body: JSON.stringify({ version: updateInfo.latest_version }),
+      });
+      setUpdateInfo((prev) => prev ? { ...prev, popup_visible: false, dismissed_version: prev.latest_version } : prev);
+    } catch { /* ignore */ }
+  }, [updateInfo]);
+
+  const startUpdate = useCallback(async () => {
+    setUpdateBusy(true);
+    try {
+      await api<{ ok: boolean; message: string }>("/api/system/update", {
+        method: "POST",
+      });
+      setUpdateInfo((prev) => prev ? {
+        ...prev,
+        popup_visible: false,
+        update_status: "queued",
+        update_message: prev.latest_version ? `Starting update to ${prev.latest_version}...` : "Starting update...",
+      } : prev);
+    } catch {
+      fetchUpdateInfo(false);
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [fetchUpdateInfo]);
+
   return (
     <div className="dashboard">
       <Atmosphere />
+      {updateInfo?.has_update && updateInfo.popup_visible && (
+        <UpdateToast update={updateInfo} onDismiss={dismissUpdate} onUpdate={startUpdate} busy={updateBusy} />
+      )}
       <div className="db-scroll">
         <div className="db-inner">
           <HeroRow agents={agents} health={health} entityCount={entityCount} workflowCount={workflows.length} />
