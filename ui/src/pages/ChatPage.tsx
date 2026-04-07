@@ -54,7 +54,6 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
   const cycleChatMode = () => {
     setChatMode((prev) => (prev === "off" ? "fast" : prev === "fast" ? "auto" : "off"));
   };
-
   const isLikelyQuestion = (text: string) => {
     const normalized = text.trim();
     if (!normalized) return false;

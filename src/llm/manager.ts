@@ -115,7 +115,7 @@ export class LLMManager {
           }
 
           if (!hasError) {
-            return; // Successful stream completion
+            return;
           }
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
@@ -130,5 +130,4 @@ export class LLMManager {
       error: `All providers failed:\n${errors.map(e => `  ${e.provider}: ${e.error}`).join('\n')}`,
     };
   }
-
 }

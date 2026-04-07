@@ -3,6 +3,7 @@ import { api } from "../hooks/useApi";
 import type { AgentActivityEvent } from "../hooks/useWebSocket";
 import CommandCenterView from "../components/office/CommandCenterView";
 import OrbitalView from "../components/office/OrbitalView";
+import AgentBuilderView from "../components/office/AgentBuilderView";
 import type { AgentWithLive, LiveAgentInfo } from "../components/office/CommandCenterView";
 import "../styles/agents.css";
 
@@ -26,7 +27,7 @@ type Props = {
   agentActivity: AgentActivityEvent[];
 };
 
-type TabId = "command" | "orbital";
+type TabId = "command" | "orbital" | "builder";
 
 export default function OfficePage({ agentActivity }: Props) {
   const [liveAgents, setLiveAgents] = useState<LiveAgentInfo[]>([]);
@@ -165,6 +166,19 @@ export default function OfficePage({ agentActivity }: Props) {
           Orbital View
           <span className="ag-tab-badge">{activeCount} active</span>
         </button>
+        <button
+          className={`ag-tab-btn${activeTab === "builder" ? " active" : ""}`}
+          onClick={() => setActiveTab("builder")}
+        >
+          <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+            <rect x="1.2" y="2" width="3" height="3" rx="0.8" stroke="currentColor" strokeWidth="1.2" />
+            <rect x="8.8" y="2" width="3" height="3" rx="0.8" stroke="currentColor" strokeWidth="1.2" />
+            <rect x="5" y="8" width="3" height="3" rx="0.8" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M4.2 3.5h4.6M6.5 5v3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+          </svg>
+          Agent Builder
+          <span className="ag-tab-badge">beta</span>
+        </button>
       </div>
 
       {/* ── Tab Views ── */}
@@ -180,6 +194,7 @@ export default function OfficePage({ agentActivity }: Props) {
           agentActivity={agentActivity}
         />
       )}
+      {activeTab === "builder" && <AgentBuilderView />}
     </div>
   );
 }
