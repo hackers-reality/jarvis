@@ -4,6 +4,7 @@ import { MessageBubble } from "./MessageBubble";
 
 type Props = {
   messages: ChatMessage[];
+  onApprovalAction?: (decision: "approve" | "deny") => void;
 };
 
 function formatTimeDivider(timestamp: number): string {
@@ -27,7 +28,7 @@ function shouldShowTimeDivider(current: ChatMessage, previous: ChatMessage | und
   return gap > 10 * 60 * 1000; // 10 minutes
 }
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, onApprovalAction }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -57,7 +58,7 @@ export function MessageList({ messages }: Props) {
                 <span className="chat-time-label">{formatTimeDivider(msg.timestamp)}</span>
               </div>
             )}
-            <MessageBubble message={msg} />
+            <MessageBubble message={msg} onApprovalAction={onApprovalAction} />
           </React.Fragment>
         ))}
         <div ref={bottomRef} />

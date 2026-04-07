@@ -6,6 +6,7 @@ import { MarkdownContent } from "./MarkdownContent";
 
 type Props = {
   message: ChatMessage;
+  onApprovalAction?: (decision: "approve" | "deny") => void;
 };
 
 function getSystemType(message: ChatMessage): "heartbeat" | "error" | "workflow" | "default" {
@@ -33,7 +34,7 @@ function getSystemLabel(type: string, message: ChatMessage): string {
   }
 }
 
-export function MessageBubble({ message }: Props) {
+export function MessageBubble({ message, onApprovalAction }: Props) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const timestamp = new Date(message.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -88,6 +89,17 @@ export function MessageBubble({ message }: Props) {
         {isUser ? message.content : <MarkdownContent content={message.content} />}
         {message.isStreaming && <span className="chat-cursor" />}
       </div>
+
+      {!isUser && message.approvalPrompt && onApprovalAction && (
+        <div className="chat-tools-row">
+          <button className="chat-approval-btn chat-approval-btn-approve" onClick={() => onApprovalAction("approve")}>
+            Allow
+          </button>
+          <button className="chat-approval-btn chat-approval-btn-deny" onClick={() => onApprovalAction("deny")}>
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Tool calls */}
       {message.toolCalls && message.toolCalls.length > 0 && (

@@ -270,6 +270,10 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
 
     // 4. Create proactive modules
     const heartbeatConfig = jarvisConfig.heartbeat;
+    const userDrivenLLMOnly = jarvisConfig.llm.user_driven_only === true;
+    if (userDrivenLLMOnly) {
+      console.log('[Daemon] LLM user-driven-only mode enabled: autonomous/proactive LLM flows are disabled');
+    }
     const reactor = new EventReactor();
     const coalescer = new EventCoalescer();
 
@@ -517,15 +521,20 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     });
 
     // 10b. Create and start background agent (needs LLM providers from agentService.start())
-    const bgAgentService = new BackgroundAgentService(jarvisConfig, agentService.getLLMManager());
-    bgAgentService.setResearchQueue(researchQueue);
-    await bgAgentService.start();
-    bgAgent = bgAgentService;
-    console.log('[Daemon] Background agent started (separate browser for heartbeat/reactions)');
+    let bgAgentService: BackgroundAgentService | null = null;
+    if (!userDrivenLLMOnly) {
+      bgAgentService = new BackgroundAgentService(jarvisConfig, agentService.getLLMManager());
+      bgAgentService.setResearchQueue(researchQueue);
+      await bgAgentService.start();
+      bgAgent = bgAgentService;
+      console.log('[Daemon] Background agent started (separate browser for heartbeat/reactions)');
 
-    // 10c. Wire reactor + executor to background agent (separate browser, no chat contention)
-    reactor.setAgentService(bgAgentService);
-    executor.setAgentService(bgAgentService);
+      // 10c. Wire reactor + executor to background agent (separate browser, no chat contention)
+      reactor.setAgentService(bgAgentService);
+      executor.setAgentService(bgAgentService);
+    } else {
+      console.log('[Daemon] Background agent disabled (user-driven-only mode)');
+    }
 
     // 10d. Wire executor broadcast (needs wsServer running) and start
     executor.setBroadcast((msg) => wsService.getServer().broadcast(msg));
@@ -535,7 +544,9 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
 
     // 10e. Create and start Awareness Service (M13)
     //       Skipped when --no-local-tools is set (headless / Docker)
-    if (jarvisConfig.awareness?.enabled !== false && !config.noLocalTools) {
+    if (userDrivenLLMOnly) {
+      console.log('[Daemon] Awareness service disabled (user-driven-only mode)');
+    } else if (jarvisConfig.awareness?.enabled !== false && !config.noLocalTools) {
       try {
         const { AwarenessService } = await import('../awareness/service.ts');
         const svc = new AwarenessService(
@@ -832,7 +843,9 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
 
     // 10f. Goal Service (M16)
     const goalsConfig = jarvisConfig.goals;
-    if (goalsConfig?.enabled !== false) {
+    if (userDrivenLLMOnly) {
+      console.log('[Daemon] Goal service disabled (user-driven-only mode)');
+    } else if (goalsConfig?.enabled !== false) {
       try {
         const { GoalService } = await import('../goals/service.ts');
         const goalSvc = new GoalService(goalsConfig ?? {
@@ -937,12 +950,14 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
 
       // Classify and route
       const classified = classifyEvent(observerEvent);
-      if (classified.priority === 'critical' || classified.priority === 'high') {
-        reactor.react(classified).catch(err =>
-          console.error('[Daemon] Sidecar event reaction error:', err)
-        );
-      } else {
-        coalescer.addEvent(classified);
+      if (!userDrivenLLMOnly) {
+        if (classified.priority === 'critical' || classified.priority === 'high') {
+          reactor.react(classified).catch(err =>
+            console.error('[Daemon] Sidecar event reaction error:', err)
+          );
+        } else {
+          coalescer.addEvent(classified);
+        }
       }
 
       // Broadcast to dashboard
@@ -953,68 +968,67 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     healthMonitor.start(config.healthCheckInterval);
 
     // 12. Set up heartbeat timer with configurable interval and active hours
-    const heartbeatIntervalMs = (heartbeatConfig?.interval_minutes ?? 15) * 60 * 1000;
-    const activeHours = heartbeatConfig?.active_hours ?? { start: 8, end: 23 };
+    if (!userDrivenLLMOnly && bgAgentService) {
+      const heartbeatIntervalMs = (heartbeatConfig?.interval_minutes ?? 15) * 60 * 1000;
+      const activeHours = heartbeatConfig?.active_hours ?? { start: 8, end: 23 };
 
-    console.log(`[Daemon] Heartbeat interval: ${heartbeatConfig?.interval_minutes ?? 15} min, active hours: ${activeHours.start}:00-${activeHours.end}:00`);
+      console.log(`[Daemon] Heartbeat interval: ${heartbeatConfig?.interval_minutes ?? 15} min, active hours: ${activeHours.start}:00-${activeHours.end}:00`);
 
-    const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minute timeout for heartbeat
-    let heartbeatBusy = false;
-    heartbeatTimer = setInterval(async () => {
-      if (heartbeatBusy) {
-        console.log('[Daemon] Skipping heartbeat — previous still running');
-        return;
-      }
-      // Check if within active hours
-      const currentHour = new Date().getHours();
-      if (currentHour < activeHours.start || currentHour >= activeHours.end) {
-        console.log(`[Daemon] Outside active hours (${activeHours.start}-${activeHours.end}), skipping heartbeat`);
-        return;
-      }
+      const HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minute timeout for heartbeat
+      let heartbeatBusy = false;
+      heartbeatTimer = setInterval(async () => {
+        if (heartbeatBusy) {
+          console.log('[Daemon] Skipping heartbeat — previous still running');
+          return;
+        }
+        const currentHour = new Date().getHours();
+        if (currentHour < activeHours.start || currentHour >= activeHours.end) {
+          console.log(`[Daemon] Outside active hours (${activeHours.start}-${activeHours.end}), skipping heartbeat`);
+          return;
+        }
 
-      heartbeatBusy = true;
-      console.log('[Daemon] Heartbeat starting...');
-      try {
-        // Check commitments and route critical/high ones to reactor
-        const commitmentEvents = checkCommitments();
-        for (const evt of commitmentEvents) {
-          if (evt.priority === 'critical' || evt.priority === 'high') {
-            reactor.react(evt).catch(err =>
-              console.error('[Daemon] Commitment reaction error:', err)
-            );
-          } else {
-            coalescer.addEvent(evt);
+        heartbeatBusy = true;
+        console.log('[Daemon] Heartbeat starting...');
+        try {
+          const commitmentEvents = checkCommitments();
+          for (const evt of commitmentEvents) {
+            if (evt.priority === 'critical' || evt.priority === 'high') {
+              reactor.react(evt).catch(err =>
+                console.error('[Daemon] Commitment reaction error:', err)
+              );
+            } else {
+              coalescer.addEvent(evt);
+            }
           }
+
+          const coalescedSummary = coalescer.flush();
+          const heartbeatPromise = bgAgentService.handleHeartbeat(
+            coalescedSummary || undefined
+          );
+          const timeoutPromise = new Promise<null>((resolve) =>
+            setTimeout(() => {
+              console.error('[Daemon] Heartbeat timed out after 5 minutes');
+              resolve(null);
+            }, HEARTBEAT_TIMEOUT_MS)
+          );
+
+          const heartbeatResponse = await Promise.race([heartbeatPromise, timeoutPromise]);
+
+          if (heartbeatResponse) {
+            console.log('[Daemon] Heartbeat response:', heartbeatResponse.slice(0, 200));
+            wsService.broadcastHeartbeat(heartbeatResponse);
+          } else {
+            console.log('[Daemon] Heartbeat returned no response (busy or timed out)');
+          }
+        } catch (err) {
+          console.error('[Daemon] Heartbeat error:', err);
+        } finally {
+          heartbeatBusy = false;
         }
-
-        // Flush coalesced events for heartbeat
-        const coalescedSummary = coalescer.flush();
-
-        // Run heartbeat on BACKGROUND agent with timeout to prevent stuck busy lock
-        const heartbeatPromise = bgAgentService.handleHeartbeat(
-          coalescedSummary || undefined
-        );
-        const timeoutPromise = new Promise<null>((resolve) =>
-          setTimeout(() => {
-            console.error('[Daemon] Heartbeat timed out after 5 minutes');
-            resolve(null);
-          }, HEARTBEAT_TIMEOUT_MS)
-        );
-
-        const heartbeatResponse = await Promise.race([heartbeatPromise, timeoutPromise]);
-
-        if (heartbeatResponse) {
-          console.log('[Daemon] Heartbeat response:', heartbeatResponse.slice(0, 200));
-          wsService.broadcastHeartbeat(heartbeatResponse);
-        } else {
-          console.log('[Daemon] Heartbeat returned no response (busy or timed out)');
-        }
-      } catch (err) {
-        console.error('[Daemon] Heartbeat error:', err);
-      } finally {
-        heartbeatBusy = false;
-      }
-    }, heartbeatIntervalMs);
+      }, heartbeatIntervalMs);
+    } else {
+      console.log('[Daemon] Heartbeat disabled (user-driven-only mode)');
+    }
 
     logWithTimestamp(`JARVIS daemon running on port ${config.port}`);
     console.log('');

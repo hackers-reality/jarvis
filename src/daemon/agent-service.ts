@@ -9,7 +9,7 @@
 import { join } from 'node:path';
 import type { Service, ServiceStatus } from './services.ts';
 import type { JarvisConfig } from '../config/types.ts';
-import type { LLMStreamEvent } from '../llm/provider.ts';
+import type { ContentBlock, LLMMessage, LLMResponse, LLMStreamEvent, LLMTool, LLMToolCall } from '../llm/provider.ts';
 import type { RoleDefinition } from '../roles/types.ts';
 import type { PersonalityModel } from '../personality/model.ts';
 
@@ -22,8 +22,8 @@ import { OllamaProvider } from '../llm/ollama.ts';
 import { OpenRouterProvider } from '../llm/openrouter.ts';
 import { AgentOrchestrator } from '../agents/orchestrator.ts';
 import { loadRole } from '../roles/loader.ts';
-import { ToolRegistry } from '../actions/tools/registry.ts';
-import { BUILTIN_TOOLS, browser } from '../actions/tools/builtin.ts';
+import { ToolRegistry, isToolResult, type ToolDefinition } from '../actions/tools/registry.ts';
+import { BUILTIN_TOOLS, browser, toolDefToLLMTool } from '../actions/tools/builtin.ts';
 import { createDelegateTool, type DelegateToolDeps } from '../actions/tools/delegate.ts';
 import { createManageAgentsTool, type AgentToolDeps } from '../actions/tools/agents.ts';
 import { contentPipelineTool } from '../actions/tools/content.ts';
@@ -50,6 +50,7 @@ import {
 import { getDueCommitments, getUpcoming } from '../vault/commitments.ts';
 import { findContent } from '../vault/content-pipeline.ts';
 import { getRecentObservations } from '../vault/observations.ts';
+import { getRecentConversation } from '../vault/conversations.ts';
 import { extractAndStore } from '../vault/extractor.ts';
 import { getKnowledgeForMessage } from '../vault/retrieval.ts';
 import { formatUserProfileForPrompt } from '../user/profile.ts';
@@ -58,6 +59,34 @@ import type { ResearchQueue } from './research-queue.ts';
 import type { IAgentService } from './agent-service-interface.ts';
 import type { AuthorityEngine } from '../authority/engine.ts';
 import { getSidecarManager } from '../actions/tools/sidecar-route.ts';
+
+type FastModeReplyResult = {
+  kind: 'reply';
+  response: string;
+};
+
+export type FastModeApprovalRequest =
+  | {
+      kind: 'tool';
+      requestText: string;
+      toolName: string;
+      reason: string;
+      promptText: string;
+    }
+  | {
+      kind: 'delegate';
+      requestText: string;
+      toolName: 'delegate_task';
+      specialistName: string;
+      delegatedTask: string;
+      reason: string;
+      promptText: string;
+    };
+
+type FastModeDecision = FastModeReplyResult | {
+  kind: 'approval';
+  request: FastModeApprovalRequest;
+};
 
 export class AgentService implements Service, IAgentService {
   name = 'agent';
@@ -270,6 +299,101 @@ export class AgentService implements Service, IAgentService {
   }
 
   /**
+   * Stream a message directly through the active LLM with no tools,
+   * no delegation, and minimal context for low-latency chat.
+   */
+  streamFastMessage(text: string, channel: string = 'websocket'): {
+    stream: AsyncIterable<LLMStreamEvent>;
+    onComplete: (fullText: string) => Promise<void>;
+  } {
+    const systemPrompt = this.buildFastSystemPrompt(channel, text);
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...this.getRecentChatMessages(channel, text),
+    ];
+
+    const stream = this.streamDirectLLM(messages);
+
+    const onComplete = async (fullText: string): Promise<void> => {
+      await Promise.allSettled([
+        this.extractKnowledge(text, fullText).catch((err) =>
+          console.error('[AgentService] Extraction error:', err instanceof Error ? err.message : err)
+        ),
+        this.learnFromInteraction(text, fullText, channel).catch((err) =>
+          console.error('[AgentService] Learning error:', err instanceof Error ? err.message : err)
+        ),
+      ]);
+    };
+
+    return { stream, onComplete };
+  }
+
+  getFastModeApprovalRequest(text: string): FastModeApprovalRequest | null {
+    return this.classifyFastModeApproval(text);
+  }
+
+  async handleFastModeTurn(text: string, channel: string = 'websocket'): Promise<FastModeDecision> {
+    const plannerPrompt = this.buildFastPlannerPrompt(channel);
+    const messages: LLMMessage[] = [
+      { role: 'system', content: plannerPrompt },
+      ...this.getRecentChatMessages(channel, text),
+    ];
+
+    const response = await this.llmManager.chat(messages);
+    const plan = this.parseFastModeDecision(response.content, text);
+    if (!plan) {
+      return { kind: 'reply', response: response.content };
+    }
+
+    if (plan.kind === 'reply') {
+      return plan;
+    }
+
+    if (plan.kind === 'approval' && plan.request.kind === 'tool') {
+      const tool = this.orchestrator.getToolRegistry()?.get(plan.request.toolName);
+      if (!tool) {
+        return {
+          kind: 'reply',
+          response: `I can help with that, but the tool \`${plan.request.toolName}\` is not available in this session.`,
+        };
+      }
+    }
+
+    if (plan.kind === 'approval' && plan.request.kind === 'delegate' && !this.specialists.has(plan.request.specialistName)) {
+      return {
+        kind: 'reply',
+        response: `I can help directly, but the specialist \`${plan.request.specialistName}\` is not available right now.`,
+      };
+    }
+
+    return plan;
+  }
+
+  async finalizeFastModeReply(text: string, response: string, channel: string = 'websocket'): Promise<void> {
+    await this.finalizeInteraction(text, response, channel);
+  }
+
+  streamFastApprovedAction(request: FastModeApprovalRequest, channel: string = 'websocket'): {
+    stream: AsyncIterable<LLMStreamEvent>;
+    onComplete: (fullText: string) => Promise<void>;
+  } {
+    const systemPrompt = this.buildFastApprovedSystemPrompt(channel, request);
+    const allowedTools = this.getRestrictedFastModeTools(request);
+    const messages: LLMMessage[] = [
+      { role: 'system', content: systemPrompt },
+      ...this.getRecentChatMessages(channel, request.requestText),
+    ];
+
+    const stream = this.streamRestrictedLLM(messages, allowedTools);
+
+    const onComplete = async (fullText: string): Promise<void> => {
+      await this.finalizeInteraction(request.requestText, fullText, channel);
+    };
+
+    return { stream, onComplete };
+  }
+
+  /**
    * Non-streaming message handler. Returns full response string.
    */
   async handleMessage(text: string, channel: string = 'websocket'): Promise<string> {
@@ -464,6 +588,344 @@ export class AgentService implements Service, IAgentService {
     return `${rolePrompt}\n\n${personalityPrompt}`;
   }
 
+  private buildFastSystemPrompt(channel: string, userMessage?: string): string {
+    if (!this.role) return '';
+
+    const personality = this.personality ?? getPersonality();
+    const channelPersonality = getChannelPersonality(personality, channel);
+    const personalityPrompt = personalityToPrompt(channelPersonality);
+    const context = this.buildPromptContext(userMessage);
+    const sections: string[] = [
+      `You are ${this.role.name}. ${this.role.description}`,
+      '',
+      '# Fast Chat Mode',
+      'Answer directly and conversationally.',
+      'Do not use tools.',
+      'Do not delegate to specialists.',
+      'Do not plan multi-step actions unless the user explicitly asks.',
+      'Prefer a fast, clear answer over exhaustive reasoning.',
+      '',
+      '# Communication Style',
+      `Tone: ${this.role.communication_style.tone}.`,
+      `Verbosity: ${this.role.communication_style.verbosity}.`,
+      `Formality: ${this.role.communication_style.formality}.`,
+    ];
+
+    if (context.userName || context.currentTime || context.knowledgeContext) {
+      sections.push('', '# Current Context');
+      if (context.userName) sections.push(`User: ${context.userName}`);
+      if (context.currentTime) sections.push(`Time: ${context.currentTime}`);
+      if (context.knowledgeContext) {
+        sections.push('', '## Relevant Knowledge');
+        sections.push(context.knowledgeContext);
+      }
+    }
+
+    sections.push('', personalityPrompt);
+    return sections.join('\n');
+  }
+
+  private classifyFastModeApproval(text: string): FastModeApprovalRequest | null {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+
+    const lower = trimmed.toLowerCase();
+
+    const delegate = this.classifyFastModeDelegation(trimmed, lower);
+    if (delegate) return delegate;
+
+    const toolRequest = this.classifyFastModeTool(trimmed, lower);
+    if (toolRequest) return toolRequest;
+
+    return null;
+  }
+
+  private classifyFastModeDelegation(text: string, lower: string): FastModeApprovalRequest | null {
+    const specialistChecks: Array<{
+      specialistName: string;
+      reason: string;
+      patterns: RegExp[];
+    }> = [
+      {
+        specialistName: 'software-engineer',
+        reason: 'This looks like a coding or debugging task that benefits from the software engineer specialist.',
+        patterns: [/\b(implement|fix|debug|refactor|write code|edit code|patch|bug|compile|test suite|typescript|javascript|python)\b/i],
+      },
+      {
+        specialistName: 'research-analyst',
+        reason: 'This looks like a deeper research task that benefits from the research analyst specialist.',
+        patterns: [/\b(research|investigate|look into this deeply|dig into|compare options|find sources)\b/i],
+      },
+      {
+        specialistName: 'data-analyst',
+        reason: 'This looks like a data analysis task that benefits from the data analyst specialist.',
+        patterns: [/\b(csv|spreadsheet|dataset|analyze data|metrics|chart|dashboard data)\b/i],
+      },
+      {
+        specialistName: 'content-writer',
+        reason: 'This looks like a writing task that benefits from the content writer specialist.',
+        patterns: [/\b(write a post|draft article|blog post|newsletter|ad copy|landing page copy)\b/i],
+      },
+    ];
+
+    const explicitlyRequestsDelegation = /\b(delegate|delegation|specialist|hand this off|have someone else do this)\b/i.test(lower);
+
+    for (const candidate of specialistChecks) {
+      if (!explicitlyRequestsDelegation && !candidate.patterns.some((pattern) => pattern.test(text))) {
+        continue;
+      }
+      if (!this.specialists.has(candidate.specialistName)) {
+        continue;
+      }
+      return {
+        kind: 'delegate',
+        requestText: text,
+        toolName: 'delegate_task',
+        specialistName: candidate.specialistName,
+        delegatedTask: text,
+        reason: candidate.reason,
+        promptText: `This is better handled by specialist \`${candidate.specialistName}\`.\n\nReason: ${candidate.reason}\n\nAllow JARVIS to delegate this task?`,
+      };
+    }
+
+    return null;
+  }
+
+  private classifyFastModeTool(text: string, lower: string): FastModeApprovalRequest | null {
+    const checks: Array<{ toolName: string; reason: string; patterns: RegExp[] }> = [
+      {
+        toolName: 'run_command',
+        reason: 'This request needs terminal execution.',
+        patterns: [/\b(run|execute|terminal|shell|command|cmd|bash|powershell)\b/i],
+      },
+      {
+        toolName: 'read_file',
+        reason: 'This request needs reading a file from disk.',
+        patterns: [/\b(read|open|show|view|cat|check)\b.*\b(file|config|log|source|code|path)\b/i],
+      },
+      {
+        toolName: 'write_file',
+        reason: 'This request needs editing or creating a file.',
+        patterns: [/\b(write|edit|modify|update|change|append|create)\b.*\b(file|config|script|document|code)\b/i],
+      },
+      {
+        toolName: 'list_directory',
+        reason: 'This request needs listing a directory or folder.',
+        patterns: [/\b(list|show|check)\b.*\b(directory|folder|files|contents)\b/i],
+      },
+      {
+        toolName: 'browser_navigate',
+        reason: 'This request needs opening or checking a website.',
+        patterns: [/\b(open|visit|navigate|go to|browse)\b.*\b(site|website|page|url|link)\b/i, /\bhttps?:\/\//i, /\bwww\./i],
+      },
+      {
+        toolName: 'capture_screen',
+        reason: 'This request needs a screenshot or screen capture.',
+        patterns: [/\b(screenshot|screen capture|capture the screen|what is on my screen)\b/i],
+      },
+      {
+        toolName: 'get_system_info',
+        reason: 'This request needs live system information.',
+        patterns: [/\b(system info|system information|cpu|memory|ram|disk usage|os version|specs)\b/i],
+      },
+      {
+        toolName: 'get_clipboard',
+        reason: 'This request needs reading the clipboard.',
+        patterns: [/\b(clipboard|copied text|what did i copy)\b/i],
+      },
+      {
+        toolName: 'set_clipboard',
+        reason: 'This request needs writing to the clipboard.',
+        patterns: [/\b(copy this|put .* clipboard|set clipboard)\b/i],
+      },
+    ];
+
+    for (const candidate of checks) {
+      if (!candidate.patterns.some((pattern) => pattern.test(text))) {
+        continue;
+      }
+      if (!this.orchestrator.getToolRegistry()?.get(candidate.toolName)) {
+        continue;
+      }
+      return {
+        kind: 'tool',
+        requestText: text,
+        toolName: candidate.toolName,
+        reason: candidate.reason,
+        promptText: `This needs the \`${candidate.toolName}\` tool.\n\nReason: ${candidate.reason}\n\nAllow JARVIS to use \`${candidate.toolName}\` just for this request?`,
+      };
+    }
+
+    const probablyActionRequest = /\b(check|look up|find|search|inspect|open|show|read|write|edit|run|list|browse|visit|click|type)\b/i.test(lower);
+    if (!probablyActionRequest) {
+      return null;
+    }
+
+    return null;
+  }
+
+  private buildFastPlannerPrompt(channel: string): string {
+    if (!this.role) return '';
+
+    const personality = this.personality ?? getPersonality();
+    const channelPersonality = getChannelPersonality(personality, channel);
+    const personalityPrompt = personalityToPrompt(channelPersonality);
+    const toolRegistry = this.orchestrator.getToolRegistry();
+    const toolList = toolRegistry?.list().map((tool) => `- ${tool.name}: ${tool.description}`).join('\n') ?? '- None';
+    const specialistList = this.specialists.size > 0
+      ? Array.from(this.specialists.values()).map((role) => `- ${role.id}: ${role.description}`).join('\n')
+      : '- None';
+
+    return [
+      `You are ${this.role.name}. ${this.role.description}`,
+      '',
+      '# Fast Chat Router',
+      'You are deciding whether fast mode should: reply directly, ask approval for one tool, or ask approval to delegate one specialist task.',
+      'Default to a direct reply unless a tool or delegation is clearly necessary to satisfy the user request.',
+      'If a tool is needed, request exactly one tool.',
+      'If delegation is needed, request exactly one specialist and a concrete delegated task.',
+      'Never assume approval has already been granted.',
+      'Return valid JSON only. No markdown fences.',
+      '',
+      '# JSON Schema',
+      '{"kind":"reply","response":"..."}',
+      '{"kind":"tool","response":"...","toolName":"tool_name","reason":"short reason"}',
+      '{"kind":"delegate","response":"...","specialistName":"role-id","task":"delegated task","reason":"short reason"}',
+      '',
+      '# Available Tools',
+      toolList,
+      '',
+      '# Available Specialists',
+      specialistList,
+      '',
+      '# Communication Style',
+      'Keep "response" concise and user-facing.',
+      'For tool/delegate decisions, "response" should briefly explain why approval is needed.',
+      '',
+      personalityPrompt,
+    ].join('\n');
+  }
+
+  private buildFastApprovedSystemPrompt(channel: string, request: FastModeApprovalRequest): string {
+    if (!this.role) return '';
+
+    const personality = this.personality ?? getPersonality();
+    const channelPersonality = getChannelPersonality(personality, channel);
+    const personalityPrompt = personalityToPrompt(channelPersonality);
+
+    if (request.kind === 'delegate') {
+      return [
+        `You are ${this.role.name}. ${this.role.description}`,
+        '',
+        '# Fast Chat Approved Delegation',
+        `The user explicitly approved delegating this request to specialist \`${request.specialistName}\`.`,
+        'You may use only the `delegate_task` tool for this turn.',
+        `Use role_id="${request.specialistName}" and delegate the task: ${request.delegatedTask}`,
+        'Do not use any other tools.',
+        'Do not ask for approval again.',
+        'After the delegated work finishes, answer the user directly with the result.',
+        '',
+        personalityPrompt,
+      ].join('\n');
+    }
+
+    return [
+      `You are ${this.role.name}. ${this.role.description}`,
+      '',
+      '# Fast Chat Approved Tool Use',
+      `The user explicitly approved using the tool \`${request.toolName}\` for this turn.`,
+      `You may use only the tool \`${request.toolName}\`.`,
+      'Do not use any other tools.',
+      'Do not delegate.',
+      'Do not ask for approval again.',
+      'If the task can be completed without that tool, answer directly.',
+      'After using the tool if needed, give the user the final answer.',
+      '',
+      personalityPrompt,
+    ].join('\n');
+  }
+
+  private parseFastModeDecision(content: string, requestText: string): FastModeDecision | null {
+    const parsed = this.parseJsonObject(content);
+    if (!parsed || typeof parsed.kind !== 'string') {
+      return null;
+    }
+
+    if (parsed.kind === 'reply' && typeof parsed.response === 'string' && parsed.response.trim()) {
+      return {
+        kind: 'reply',
+        response: parsed.response.trim(),
+      };
+    }
+
+    if (
+      parsed.kind === 'tool' &&
+      typeof parsed.toolName === 'string' &&
+      parsed.toolName.trim() &&
+      typeof parsed.reason === 'string' &&
+      parsed.reason.trim()
+    ) {
+      const toolName = parsed.toolName.trim();
+      const reason = parsed.reason.trim();
+      return {
+        kind: 'approval',
+        request: {
+          kind: 'tool',
+          requestText,
+          toolName,
+          reason,
+          promptText: `This needs the \`${toolName}\` tool.\n\nReason: ${reason}\n\nAllow JARVIS to use \`${toolName}\` just for this request?`,
+        },
+      };
+    }
+
+    if (
+      parsed.kind === 'delegate' &&
+      typeof parsed.specialistName === 'string' &&
+      parsed.specialistName.trim() &&
+      typeof parsed.task === 'string' &&
+      parsed.task.trim() &&
+      typeof parsed.reason === 'string' &&
+      parsed.reason.trim()
+    ) {
+      const specialistName = parsed.specialistName.trim();
+      const delegatedTask = parsed.task.trim();
+      const reason = parsed.reason.trim();
+      return {
+        kind: 'approval',
+        request: {
+          kind: 'delegate',
+          requestText,
+          toolName: 'delegate_task',
+          specialistName,
+          delegatedTask,
+          reason,
+          promptText: `This is better handled by specialist \`${specialistName}\`.\n\nReason: ${reason}\n\nAllow JARVIS to delegate this task?`,
+        },
+      };
+    }
+
+    return null;
+  }
+
+  private parseJsonObject(content: string): Record<string, unknown> | null {
+    const trimmed = content.trim();
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1]!.trim() : trimmed;
+    const start = candidate.indexOf('{');
+    const end = candidate.lastIndexOf('}');
+    if (start === -1 || end === -1 || end <= start) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(candidate.slice(start, end + 1));
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+
   private buildHeartbeatPrompt(coalescedEvents?: string): string {
     if (!this.role) return '';
 
@@ -619,6 +1081,199 @@ export class AgentService implements Service, IAgentService {
     }
 
     return context;
+  }
+
+  private getRecentChatMessages(channel: string, currentText: string): LLMMessage[] {
+    try {
+      const recent = getRecentConversation(channel);
+      if (!recent) {
+        return [{ role: 'user', content: currentText }];
+      }
+
+      const history = recent.messages
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role, content: m.content }))
+        .slice(-12) as LLMMessage[];
+
+      if (
+        history.length === 0 ||
+        history[history.length - 1]?.role !== 'user' ||
+        history[history.length - 1]?.content !== currentText
+      ) {
+        history.push({ role: 'user', content: currentText });
+      }
+
+      return history;
+    } catch (err) {
+      console.error('[AgentService] Error loading fast chat history:', err);
+      return [{ role: 'user', content: currentText }];
+    }
+  }
+
+  private getRestrictedFastModeTools(request: FastModeApprovalRequest): ToolDefinition[] {
+    const toolRegistry = this.orchestrator.getToolRegistry();
+    if (!toolRegistry) {
+      throw new Error('No tool registry configured');
+    }
+
+    const tool = toolRegistry.get(request.toolName);
+    if (!tool) {
+      throw new Error(`Tool '${request.toolName}' is not available`);
+    }
+
+    return [tool];
+  }
+
+  private async *streamRestrictedLLM(
+    messages: LLMMessage[],
+    allowedTools: ToolDefinition[],
+  ): AsyncIterable<LLMStreamEvent> {
+    const restrictedRegistry = new ToolRegistry();
+    for (const tool of allowedTools) {
+      restrictedRegistry.register(tool);
+    }
+
+    const llmTools: LLMTool[] | undefined =
+      allowedTools.length > 0 ? allowedTools.map(toolDefToLLMTool) : undefined;
+
+    const totalUsage = { input_tokens: 0, output_tokens: 0 };
+    let finalText = '';
+    let responseModel = this.llmManager.getPrimary() || 'unknown';
+
+    for (let iteration = 0; iteration < 6; iteration++) {
+      let accumulatedText = '';
+      const toolCalls: LLMToolCall[] = [];
+      let doneResponse: LLMResponse | null = null;
+
+      for await (const event of this.llmManager.stream(messages, { tools: llmTools })) {
+        if (event.type === 'text') {
+          accumulatedText += event.text;
+          yield event;
+        } else if (event.type === 'tool_call') {
+          toolCalls.push(event.tool_call);
+          yield event;
+        } else if (event.type === 'done') {
+          doneResponse = event.response;
+          totalUsage.input_tokens += event.response.usage.input_tokens;
+          totalUsage.output_tokens += event.response.usage.output_tokens;
+          responseModel = event.response.model;
+        } else if (event.type === 'error') {
+          yield event;
+          return;
+        }
+      }
+
+      doneResponse ??= {
+        content: accumulatedText,
+        tool_calls: toolCalls,
+        usage: { input_tokens: 0, output_tokens: 0 },
+        model: responseModel,
+        finish_reason: 'stop',
+      };
+
+      if (doneResponse.finish_reason === 'tool_use' && doneResponse.tool_calls.length > 0) {
+        messages.push({
+          role: 'assistant',
+          content: doneResponse.content,
+          tool_calls: doneResponse.tool_calls,
+        });
+
+        for (const toolCall of doneResponse.tool_calls) {
+          const result = await this.executeRestrictedToolCall(restrictedRegistry, toolCall);
+          messages.push({
+            role: 'tool',
+            content: result,
+            tool_call_id: toolCall.id,
+          });
+        }
+
+        continue;
+      }
+
+      finalText = doneResponse.content || accumulatedText;
+      yield {
+        type: 'done',
+        response: {
+          content: finalText,
+          tool_calls: [],
+          usage: totalUsage,
+          model: responseModel,
+          finish_reason: doneResponse.finish_reason ?? 'stop',
+        },
+      };
+      return;
+    }
+
+    yield {
+      type: 'done',
+      response: {
+        content: finalText,
+        tool_calls: [],
+        usage: totalUsage,
+        model: responseModel,
+        finish_reason: 'stop',
+      },
+    };
+  }
+
+  private async executeRestrictedToolCall(
+    registry: ToolRegistry,
+    toolCall: LLMToolCall,
+  ): Promise<string | ContentBlock[]> {
+    try {
+      const raw = await registry.execute(toolCall.name, toolCall.arguments);
+      if (isToolResult(raw)) {
+        return raw.content;
+      }
+      return typeof raw === 'string' ? raw : JSON.stringify(raw);
+    } catch (err) {
+      return `Error executing ${toolCall.name}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  private async *streamDirectLLM(messages: LLMMessage[]): AsyncIterable<LLMStreamEvent> {
+    let accumulatedText = '';
+    let doneResponse: LLMResponse | null = null;
+
+    for await (const event of this.llmManager.stream(messages)) {
+      if (event.type === 'text') {
+        accumulatedText += event.text;
+        yield event;
+      } else if (event.type === 'done') {
+        doneResponse = event.response;
+      } else if (event.type === 'error') {
+        yield event;
+        return;
+      }
+    }
+
+    const finalResponse = doneResponse ?? {
+      content: accumulatedText,
+      tool_calls: [],
+      usage: { input_tokens: 0, output_tokens: 0 },
+      model: this.llmManager.getPrimary() || 'unknown',
+      finish_reason: 'stop' as const,
+    };
+
+    yield {
+      type: 'done',
+      response: {
+        ...finalResponse,
+        content: accumulatedText || finalResponse.content,
+        tool_calls: [],
+      },
+    };
+  }
+
+  private async finalizeInteraction(userMessage: string, assistantResponse: string, channel: string): Promise<void> {
+    await Promise.allSettled([
+      this.extractKnowledge(userMessage, assistantResponse).catch((err) =>
+        console.error('[AgentService] Extraction error:', err instanceof Error ? err.message : err)
+      ),
+      this.learnFromInteraction(userMessage, assistantResponse, channel).catch((err) =>
+        console.error('[AgentService] Learning error:', err instanceof Error ? err.message : err)
+      ),
+    ]);
   }
 
   private async extractKnowledge(userMessage: string, assistantResponse: string): Promise<void> {
