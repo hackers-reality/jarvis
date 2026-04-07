@@ -629,6 +629,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           const busy = taskManager.isAgentBusy(spawned.agent.id)
             || spawned.agent.status === 'active'
             || Boolean(spawned.agent.agent.current_task);
+
           return json({
             ...spawned.agent.toJSON(),
             busy,
@@ -662,17 +663,18 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
     },
 
     '/api/agents/:id': {
-      DELETE: (req: Request & { params: { id: string } }) => {
+      DELETE: (req: Request & { params?: { id?: string } }) => {
         try {
           const taskManager = ctx.agentService.getTaskManager();
           if (!taskManager) return error('Persistent agents are not available.', 503);
+          const id = req.params?.id ?? new URL(req.url).pathname.split('/').pop() ?? '';
           const deps = {
             orchestrator: ctx.agentService.getOrchestrator(),
             llmManager: ctx.agentService.getLLMManager(),
             specialists: ctx.agentService.getSpecialists(),
             taskManager,
           };
-          return json(terminatePersistentAgent(deps, req.params.id));
+          return json(terminatePersistentAgent(deps, id));
         } catch (err) {
           return error(err instanceof Error ? err.message : String(err));
         }

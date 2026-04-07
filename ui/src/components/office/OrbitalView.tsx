@@ -345,7 +345,7 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
 
           const leftPct = pctToNum(pos.left);
           const topPct = pctToNum(pos.top);
-          const isActive = selectedAgent.live?.status === "active";
+          const isActive = Boolean(selectedAgent.live?.busy);
 
           // Place the card near the node but avoid overflow
           const cardLeft = leftPct > 60 ? `${leftPct - 22}%` : `${leftPct + 4}%`;
