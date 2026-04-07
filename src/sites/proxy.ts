@@ -1,15 +1,11 @@
 /**
- * Site Builder — HTTP/WebSocket Proxy
+ * Site Builder - HTTP/WebSocket Proxy
  *
  * Proxies requests to project dev servers running on localhost.
  *
  * Two routing modes on the same port:
- *  1. Explicit:  /api/sites/:id/proxy/*  → sets __proj cookie, proxies to dev server
- *  2. Catch-all: any unmatched path      → reads __proj cookie, proxies to dev server
- *
- * Because the iframe uses allow-same-origin, absolute paths emitted by
- * frameworks (e.g. /src/main.tsx) naturally hit the main server. The
- * catch-all picks them up via the cookie — zero URL rewriting needed.
+ *  1. Explicit:  /api/sites/:id/proxy/*  -> sets __proj cookie, proxies to dev server
+ *  2. Catch-all: any unmatched path      -> reads __proj cookie, proxies to dev server
  */
 
 import type { DevServerManager } from './dev-server-manager.ts';
@@ -43,7 +39,6 @@ export class SiteProxy {
     }
 
     const resp = await this.forward(req, port, subPath);
-    // Set cookie so the catch-all knows which project subsequent requests belong to
     resp.headers.append('set-cookie', `${COOKIE_NAME}=${projectId}; Path=/; SameSite=Lax`);
     return resp;
   }
@@ -52,14 +47,14 @@ export class SiteProxy {
    * Proxy an HTTP request using the __proj cookie (catch-all route).
    * Returns null if no cookie or project isn't running.
    */
-  async proxyCatchAll(req: Request, pathname: string): Promise<Response | null> {
-    const projectId = this.projectFromCookie(req);
+  async proxyCatchAll(req: Request, subPath: string): Promise<Response | null> {
+    const projectId = this.getProjectIdFromCookie(req);
     if (!projectId) return null;
 
     const port = this.devServerManager.getPort(projectId);
     if (port === null) return null;
 
-    return this.forward(req, port, pathname);
+    return this.forward(req, port, subPath);
   }
 
   /**
@@ -74,20 +69,25 @@ export class SiteProxy {
   /**
    * Get the WebSocket target URL using the __proj cookie (catch-all).
    */
-  getWebSocketTargetFromCookie(req: Request, pathname: string): string | null {
-    const projectId = this.projectFromCookie(req);
+  getWebSocketTargetFromCookie(req: Request, subPath: string): string | null {
+    const projectId = this.getProjectIdFromCookie(req);
     if (!projectId) return null;
-    const port = this.devServerManager.getPort(projectId);
-    if (port === null) return null;
-    return `ws://127.0.0.1:${port}${pathname}`;
+    return this.getWebSocketTarget(projectId, subPath);
   }
 
-  // ── Internal ──
+  private getProjectIdFromCookie(req: Request): string | null {
+    const cookie = req.headers.get('cookie');
+    if (!cookie) return null;
 
-  private projectFromCookie(req: Request): string | null {
-    const cookies = req.headers.get('cookie') || '';
-    const m = cookies.match(/__proj=([^;]+)/);
-    return m?.[1] ?? null;
+    const match = cookie.match(/(?:^|;\s*)__proj=([^;]+)/);
+    if (!match) return null;
+
+    try {
+      const value = decodeURIComponent(match[1]!);
+      return value || null;
+    } catch {
+      return null;
+    }
   }
 
   private async forward(req: Request, targetPort: number, path: string): Promise<Response> {
