@@ -138,7 +138,9 @@ jarvis onboard
 Run JARVIS on any OS with a single command — no Bun or dependencies required. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows, macOS, Linux) if you don't have Docker yet.
 
 ```bash
+docker network create jarvis-net 2>/dev/null || true
 docker run -d --name jarvis \
+  --network jarvis-net \
   -p 3142:3142 \
   -v jarvis-data:/data \
   -e JARVIS_API_KEY=sk-ant-your-key \
@@ -146,6 +148,8 @@ docker run -d --name jarvis \
 ```
 
 The image is available on [GHCR](https://ghcr.io/vierisid/jarvis). Configuration can be provided via environment variables or by mounting a `config.yaml` into the `/data` volume.
+
+If Ollama runs in Docker too, attach it to the same `jarvis-net` network and use `http://ollama:11434` as the Ollama base URL.
 
 > **Note:** Docker runs in an isolated container, so the daemon inside it cannot access your host desktop, browser, or clipboard directly. You must still install the [sidecar](#️-sidecar-setup) on each machine where you want JARVIS to have desktop awareness and automation capabilities.
 
