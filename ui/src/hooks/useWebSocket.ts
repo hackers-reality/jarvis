@@ -112,6 +112,11 @@ export type SiteEvent = {
   timestamp: number;
 };
 
+export type ChatSendOptions = {
+  projectId?: string;
+  fastMode?: boolean;
+};
+
 export function useWebSocket() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -425,7 +430,7 @@ export function useWebSocket() {
   }, [connect]);
 
   const sendMessage = useCallback(
-    (text: string, options?: { projectId?: string }) => {
+    (text: string, options?: ChatSendOptions) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
       const id = crypto.randomUUID();
@@ -447,6 +452,7 @@ export function useWebSocket() {
         type: "chat",
         payload: {
           text,
+          ...(options?.fastMode ? { fast_mode: true } : {}),
           ...(options?.projectId ? { projectId: options.projectId } : {}),
         },
         id,
