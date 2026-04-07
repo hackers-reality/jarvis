@@ -12,22 +12,26 @@ type ChatPageProps = {
   voice?: UseVoiceReturn;
 };
 
+type ChatMode = "off" | "fast" | "auto";
+
 export default function ChatPage({ messages, isConnected, sendMessage, voice }: ChatPageProps) {
-  const [fastMode, setFastMode] = React.useState<boolean>(() => {
+  const [chatMode, setChatMode] = React.useState<ChatMode>(() => {
     try {
-      return localStorage.getItem("jarvis.fastChatMode") === "true";
+      const saved = localStorage.getItem("jarvis.chatMode");
+      if (saved === "fast" || saved === "auto" || saved === "off") return saved;
+      return localStorage.getItem("jarvis.fastChatMode") === "true" ? "fast" : "off";
     } catch {
-      return false;
+      return "off";
     }
   });
 
   useEffect(() => {
     try {
-      localStorage.setItem("jarvis.fastChatMode", String(fastMode));
+      localStorage.setItem("jarvis.chatMode", chatMode);
     } catch {
-      // ignore storage write failures
+      // ignore storage failures
     }
-  }, [fastMode]);
+  }, [chatMode]);
 
   const voiceStatus = voice
     ? voice.voiceState === "speaking" || voice.ttsAudioPlaying
@@ -39,11 +43,24 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
           : null
     : null;
 
+  const chatModeLabel = chatMode === "fast" ? "Fast Chat" : chatMode === "auto" ? "Auto Chat" : "Chat";
+  const chatModeState = chatMode === "fast" ? "No tools" : chatMode === "auto" ? "Tools on" : "Off";
+  const chatModeClass = chatMode === "fast"
+    ? "chat-fast-toggle-fast"
+    : chatMode === "auto"
+      ? "chat-fast-toggle-auto"
+      : "chat-fast-toggle-off";
+
+  const cycleChatMode = () => {
+    setChatMode((prev) => (prev === "off" ? "fast" : prev === "fast" ? "auto" : "off"));
+  };
+
   const isLikelyQuestion = (text: string) => {
     const normalized = text.trim();
     if (!normalized) return false;
     if (/[?]["')\]]*$/.test(normalized)) return true;
-    return /\b(can|could|would|will|should|do|does|did|are|is|want|need|which|what|when|where|why|how)\b/i.test(normalized) && /\b(you|your)\b/i.test(normalized);
+    return /\b(can|could|would|will|should|do|does|did|are|is|want|need|which|what|when|where|why|how)\b/i.test(normalized)
+      && /\b(you|your)\b/i.test(normalized);
   };
 
   const prevVoiceStateRef = React.useRef<VoiceState>("idle");
@@ -71,12 +88,9 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
 
   return (
     <div className="chat-page">
-      {/* Atmosphere — Three-layer living background */}
       <div className="chat-atmos">
-        {/* Layer 1: Aurora gradients */}
         <div className="chat-atmos-aurora" />
 
-        {/* Layer 2: Constellation dots + SVG connectors */}
         <div className="chat-atmos-constellation">
           <div className="chat-const-node drift" style={{ width: 3, height: 3, background: "rgba(139,92,246,0.15)", top: "12%", left: "18%", "--dur": "12s", "--delay": "0s" } as React.CSSProperties} />
           <div className="chat-const-node drift" style={{ width: 2, height: 2, background: "rgba(96,165,250,0.12)", top: "28%", left: "72%", "--dur": "15s", "--delay": "2s" } as React.CSSProperties} />
@@ -90,7 +104,6 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
           </svg>
         </div>
 
-        {/* Layer 3: Data stream particles */}
         <div className="chat-stream-channel" style={{ left: "22%" }}>
           <div className="chat-stream-particle" style={{ background: "rgba(139,92,246,0.18)", "--dur": "8s", "--delay": "0s" } as React.CSSProperties} />
           <div className="chat-stream-particle" style={{ background: "rgba(139,92,246,0.12)", "--dur": "12s", "--delay": "3s" } as React.CSSProperties} />
@@ -104,7 +117,6 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
         </div>
       </div>
 
-      {/* Connection status bar */}
       {!isConnected && (
         <div className="chat-status-bar chat-status-disconnected">
           <span className="chat-status-dot chat-status-dot-recording" />
@@ -112,7 +124,6 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
         </div>
       )}
 
-      {/* Voice status bar */}
       {voiceStatus && (
         <div className="chat-status-bar chat-status-voice">
           <span className={`chat-status-dot ${voice?.voiceState === "recording" ? "chat-status-dot-recording" : "chat-status-dot-voice"}`} />
@@ -120,30 +131,29 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
         </div>
       )}
 
-      {/* Messages */}
       <MessageList messages={messages} />
 
       <button
-        className={`chat-fast-toggle ${fastMode ? "chat-fast-toggle-active" : ""}`}
+        className={`chat-fast-toggle ${chatMode !== "off" ? "chat-fast-toggle-active" : ""} ${chatModeClass}`}
         type="button"
         role="switch"
-        aria-checked={fastMode}
-        onClick={() => setFastMode((v) => !v)}
-        title={`Fast Chat ${fastMode ? "on" : "off"}`}
+        aria-checked={chatMode !== "off"}
+        onClick={cycleChatMode}
+        title={`${chatModeLabel} mode`}
       >
         <span className="chat-fast-toggle-labels">
-          <span className="chat-fast-toggle-title">FAST CHAT</span>
-          <span className="chat-fast-toggle-state">{fastMode ? "No tools" : "Off"}</span>
+          <span className="chat-fast-toggle-title">{chatModeLabel}</span>
+          <span className="chat-fast-toggle-state">{chatModeState}</span>
         </span>
         <span className="chat-fast-toggle-switch" aria-hidden="true">
           <span className="chat-fast-toggle-thumb" />
         </span>
       </button>
 
-      {/* Input */}
       <ChatInput
-        onSend={(text) => sendMessage(text, { fastMode })}
+        onSend={(text) => sendMessage(text, { fastMode: chatMode === "fast" })}
         disabled={!isConnected}
+        fastMode={chatMode === "fast"}
         voice={voice ? {
           voiceState: voice.voiceState,
           startRecording: voice.startRecording,
