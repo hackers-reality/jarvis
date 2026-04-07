@@ -102,7 +102,7 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
 
   const activeAgents = agents.filter(
-    (a) => !a.isPrimary && a.live?.status === "active"
+    (a) => !a.isPrimary && a.live?.busy
   );
   const activeCount = activeAgents.length + 1; // +1 for PA (always active)
 
@@ -287,7 +287,7 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
           const pos = ORBITAL_POSITIONS[agent.roleId];
           if (!pos) return null;
 
-          const isActive = agent.live?.status === "active";
+          const isActive = Boolean(agent.live?.busy);
           const ring = pos.ring as "inner" | "outer";
 
           let bubbleClass = "ag-node-bubble";

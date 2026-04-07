@@ -121,6 +121,10 @@ export class AgentService implements Service, IAgentService {
     return this.taskManager;
   }
 
+  getSpecialists(): Map<string, RoleDefinition> {
+    return new Map(this.specialists);
+  }
+
   async start(): Promise<void> {
     this._status = 'starting';
 

@@ -26,6 +26,152 @@ export type AgentToolDeps = {
 // Track scoped registries for persistent agents so they can be reused across tasks
 const agentRegistries = new Map<string, ReturnType<typeof createScopedToolRegistry>>();
 
+export type PersistentAgentSummary = {
+  agent_id: string;
+  name: string;
+  specialist: string;
+  status: string;
+  current_task: string | null;
+  busy: boolean;
+};
+
+export function spawnPersistentAgent(deps: AgentToolDeps, specialistId: string) {
+  if (!specialistId) {
+    throw new Error('A specialist role is required to spawn an agent.');
+  }
+
+  const role = deps.specialists.get(specialistId);
+  if (!role) {
+    throw new Error(`Unknown specialist "${specialistId}". Available: ${Array.from(deps.specialists.keys()).join(', ')}`);
+  }
+
+  const primary = deps.orchestrator.getPrimary();
+  if (!primary) {
+    throw new Error('No primary agent exists');
+  }
+
+  const agent = deps.orchestrator.spawnSubAgent(primary.id, role);
+  const scopedRegistry = createScopedToolRegistry(agent.agent.authority.allowed_tools);
+  agentRegistries.set(agent.id, scopedRegistry);
+
+  // A persistent agent should start idle until it has a task.
+  agent.idle();
+
+  console.log(`[ManageAgents] Spawned ${role.name} (${agent.id}) with ${scopedRegistry.count()} tools`);
+
+  return {
+    agent,
+    summary: {
+      agent_id: agent.id,
+      name: role.name,
+      specialist: specialistId,
+      status: agent.status,
+      tools_available: scopedRegistry.count(),
+      tool_categories: agent.agent.authority.allowed_tools,
+    },
+  };
+}
+
+export async function assignPersistentAgentTask(
+  deps: AgentToolDeps,
+  params: { agentId: string; task: string; context?: string }
+) {
+  const { agentId, task, context = '' } = params;
+  if (!agentId) throw new Error('"agentId" is required');
+  if (!task) throw new Error('"task" is required');
+
+  const agent = deps.orchestrator.getAgent(agentId);
+  if (!agent) throw new Error(`Agent "${agentId}" not found. Use list to see active agents.`);
+
+  if (deps.taskManager.isAgentBusy(agentId)) {
+    throw new Error(`Agent "${agent.agent.role.name}" is already running a task.`);
+  }
+
+  const scopedRegistry = agentRegistries.get(agentId);
+  if (!scopedRegistry) {
+    throw new Error(`No tool registry for agent "${agentId}". Was it spawned via manage_agents?`);
+  }
+
+  deps.onProgress?.({
+    type: 'text',
+    agentName: agent.agent.role.name,
+    agentId,
+    data: `[Assigning task to ${agent.agent.role.name}...]`,
+  });
+
+  const taskId = deps.taskManager.launch({
+    agent,
+    task,
+    context,
+    llmManager: deps.llmManager,
+    toolRegistry: scopedRegistry,
+    onProgress: deps.onProgress,
+  });
+
+  console.log(`[ManageAgents] Assigned task ${taskId} to ${agent.agent.role.name}`);
+
+  return {
+    task_id: taskId,
+    agent_id: agentId,
+    agent_name: agent.agent.role.name,
+    status: 'running',
+    message: `Task assigned to ${agent.agent.role.name}. Use status or collect to check progress.`,
+  };
+}
+
+export function listPersistentAgents(deps: AgentToolDeps) {
+  const allAgents = deps.orchestrator.getAllAgents();
+  const primary = deps.orchestrator.getPrimary();
+  const subAgents = allAgents.filter(a => a.id !== primary?.id);
+
+  const agents: PersistentAgentSummary[] = subAgents.map(a => ({
+    agent_id: a.id,
+    name: a.agent.role.name,
+    specialist: a.agent.role.id,
+    status: a.agent.status,
+    current_task: a.agent.current_task,
+    busy: deps.taskManager.isAgentBusy(a.id),
+  }));
+
+  const tasks = deps.taskManager.listTasks().map(t => ({
+    task_id: t.id,
+    agent_name: t.agentName,
+    status: t.status,
+    task: t.task.slice(0, 100),
+    elapsed_seconds: Math.round(((t.completedAt ?? Date.now()) - t.startedAt) / 1000),
+  }));
+
+  return {
+    active_agents: agents.length,
+    agents,
+    tasks_total: tasks.length,
+    tasks_running: tasks.filter(t => t.status === 'running').length,
+    tasks,
+  };
+}
+
+export function terminatePersistentAgent(deps: AgentToolDeps, agentId: string) {
+  if (!agentId) throw new Error('"agentId" is required');
+
+  const agent = deps.orchestrator.getAgent(agentId);
+  if (!agent) throw new Error(`Agent "${agentId}" not found`);
+  if (!agentRegistries.has(agentId)) {
+    throw new Error(`Agent "${agentId}" is not a persistent managed agent.`);
+  }
+
+  const name = agent.agent.role.name;
+  agentRegistries.delete(agentId);
+  deps.orchestrator.terminateAgent(agentId);
+
+  console.log(`[ManageAgents] Terminated ${name} (${agentId})`);
+
+  return {
+    terminated: agentId,
+    name,
+    message: `${name} terminated.`,
+  };
+}
+
 export function createManageAgentsTool(deps: AgentToolDeps): ToolDefinition {
   return {
     name: 'manage_agents',
@@ -103,83 +249,24 @@ export function createManageAgentsTool(deps: AgentToolDeps): ToolDefinition {
 }
 
 function handleSpawn(deps: AgentToolDeps, params: Record<string, unknown>): string {
-  const specialistId = params.specialist as string;
-  if (!specialistId) {
-    return 'Error: "specialist" is required for spawn. Available: ' + Array.from(deps.specialists.keys()).join(', ');
+  try {
+    const specialistId = params.specialist as string;
+    return JSON.stringify(spawnPersistentAgent(deps, specialistId).summary);
+  } catch (err) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
   }
-
-  const role = deps.specialists.get(specialistId);
-  if (!role) {
-    return `Error: Unknown specialist "${specialistId}". Available: ${Array.from(deps.specialists.keys()).join(', ')}`;
-  }
-
-  const primary = deps.orchestrator.getPrimary();
-  if (!primary) {
-    return 'Error: No primary agent exists';
-  }
-
-  const agent = deps.orchestrator.spawnSubAgent(primary.id, role);
-  const scopedRegistry = createScopedToolRegistry(agent.agent.authority.allowed_tools);
-  agentRegistries.set(agent.id, scopedRegistry);
-
-  console.log(`[ManageAgents] Spawned ${role.name} (${agent.id}) with ${scopedRegistry.count()} tools`);
-
-  return JSON.stringify({
-    agent_id: agent.id,
-    name: role.name,
-    specialist: specialistId,
-    status: 'idle',
-    tools_available: scopedRegistry.count(),
-    tool_categories: agent.agent.authority.allowed_tools,
-  });
 }
 
 async function handleAssign(deps: AgentToolDeps, params: Record<string, unknown>): Promise<string> {
-  const agentId = params.agent_id as string;
-  const task = params.task as string;
-  const context = (params.context as string) || '';
-
-  if (!agentId) return 'Error: "agent_id" is required for assign';
-  if (!task) return 'Error: "task" is required for assign';
-
-  const agent = deps.orchestrator.getAgent(agentId);
-  if (!agent) return `Error: Agent "${agentId}" not found. Use list to see active agents.`;
-
-  if (deps.taskManager.isAgentBusy(agentId)) {
-    return `Error: Agent "${agent.agent.role.name}" is already running a task. Wait for it to finish or terminate it.`;
+  try {
+    return JSON.stringify(await assignPersistentAgentTask(deps, {
+      agentId: params.agent_id as string,
+      task: params.task as string,
+      context: params.context as string | undefined,
+    }));
+  } catch (err) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
   }
-
-  const scopedRegistry = agentRegistries.get(agentId);
-  if (!scopedRegistry) {
-    return `Error: No tool registry for agent "${agentId}". Was it spawned via manage_agents?`;
-  }
-
-  // Notify progress
-  deps.onProgress?.({
-    type: 'text',
-    agentName: agent.agent.role.name,
-    agentId,
-    data: `[Assigning task to ${agent.agent.role.name}...]`,
-  });
-
-  const taskId = deps.taskManager.launch({
-    agent,
-    task,
-    context,
-    llmManager: deps.llmManager,
-    toolRegistry: scopedRegistry,
-    onProgress: deps.onProgress,
-  });
-
-  console.log(`[ManageAgents] Assigned task ${taskId} to ${agent.agent.role.name}`);
-
-  return JSON.stringify({
-    task_id: taskId,
-    agent_id: agentId,
-    agent_name: agent.agent.role.name,
-    status: 'running',
-    message: `Task assigned to ${agent.agent.role.name}. Use status or collect to check progress.`,
-  });
 }
 
 function handleStatus(deps: AgentToolDeps, params: Record<string, unknown>): string {
@@ -264,58 +351,13 @@ function handleCollect(deps: AgentToolDeps, params: Record<string, unknown>): st
 }
 
 function handleList(deps: AgentToolDeps): string {
-  const allAgents = deps.orchestrator.getAllAgents();
-  const primary = deps.orchestrator.getPrimary();
-
-  // Filter to sub-agents only (not the primary)
-  const subAgents = allAgents.filter(a => a.id !== primary?.id);
-
-  const agents = subAgents.map(a => ({
-    agent_id: a.id,
-    name: a.agent.role.name,
-    specialist: a.agent.role.id,
-    status: a.agent.status,
-    current_task: a.agent.current_task,
-    busy: deps.taskManager.isAgentBusy(a.id),
-  }));
-
-  const tasks = deps.taskManager.listTasks().map(t => ({
-    task_id: t.id,
-    agent_name: t.agentName,
-    status: t.status,
-    task: t.task.slice(0, 100),
-    elapsed_seconds: Math.round(((t.completedAt ?? Date.now()) - t.startedAt) / 1000),
-  }));
-
-  return JSON.stringify({
-    active_agents: agents.length,
-    agents,
-    tasks_total: tasks.length,
-    tasks_running: tasks.filter(t => t.status === 'running').length,
-    tasks,
-  });
+  return JSON.stringify(listPersistentAgents(deps));
 }
 
 function handleTerminate(deps: AgentToolDeps, params: Record<string, unknown>): string {
-  const agentId = params.agent_id as string;
-  if (!agentId) return 'Error: "agent_id" is required for terminate';
-
-  const agent = deps.orchestrator.getAgent(agentId);
-  if (!agent) return `Error: Agent "${agentId}" not found`;
-
-  const name = agent.agent.role.name;
-
-  // Clean up registry
-  agentRegistries.delete(agentId);
-
-  // Terminate via orchestrator (cascades to children)
-  deps.orchestrator.terminateAgent(agentId);
-
-  console.log(`[ManageAgents] Terminated ${name} (${agentId})`);
-
-  return JSON.stringify({
-    terminated: agentId,
-    name,
-    message: `${name} terminated.`,
-  });
+  try {
+    return JSON.stringify(terminatePersistentAgent(deps, params.agent_id as string));
+  } catch (err) {
+    return `Error: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }

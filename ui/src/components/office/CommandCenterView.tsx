@@ -7,6 +7,14 @@ export type LiveAgentInfo = {
   status: "active" | "idle" | "terminated";
   current_task: string | null;
   created_at: number;
+  busy?: boolean;
+  latest_task?: {
+    id: string;
+    status: string;
+    task: string;
+    started_at: number;
+    completed_at: number | null;
+  } | null;
 };
 
 export type AgentWithLive = {
@@ -84,7 +92,8 @@ function AuthorityBar({
 
 function AgentCard({ agent }: { agent: AgentWithLive }) {
   const { live, isPrimary } = agent;
-  const isActive = live?.status === "active";
+  const isBusy = Boolean(live?.busy);
+  const isActive = isPrimary || isBusy;
 
   const cardClass = [
     "ag-card",
@@ -98,7 +107,7 @@ function AgentCard({ agent }: { agent: AgentWithLive }) {
   if (isPrimary) {
     statusLabel = "Primary";
     statusClass = "ag-status-badge primary-status";
-  } else if (isActive) {
+  } else if (isBusy) {
     statusLabel = "Active";
     statusClass = "ag-status-badge active";
   } else {
@@ -106,7 +115,7 @@ function AgentCard({ agent }: { agent: AgentWithLive }) {
     statusClass = "ag-status-badge idle";
   }
 
-  const currentTask = live?.current_task ?? null;
+  const currentTask = live?.current_task ?? live?.latest_task?.task ?? null;
   const sinceTs = live?.created_at ?? null;
 
   let timeLabel = "";
@@ -147,10 +156,10 @@ function AgentCard({ agent }: { agent: AgentWithLive }) {
 
 export default function CommandCenterView({ agents, agentActivity }: Props) {
   const activeAgents = agents.filter(
-    (a) => a.isPrimary || a.live?.status === "active"
+    (a) => a.isPrimary || a.live?.busy
   );
   const idleAgents = agents.filter(
-    (a) => !a.isPrimary && a.live?.status !== "active"
+    (a) => !a.isPrimary && !a.live?.busy
   );
 
   // Duplicate events for seamless scrolling loop
