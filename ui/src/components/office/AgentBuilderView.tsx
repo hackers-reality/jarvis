@@ -302,6 +302,12 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
   };
 
   const handleNodeClick = (nodeId: string) => {
+    if (connectingFrom && connectingFrom !== nodeId) {
+      createEdge(connectingFrom, nodeId);
+      setConnectingFrom(null);
+      return;
+    }
+
     setSelectedNodeId(nodeId);
     setSelectedEdgeId(null);
   };
@@ -330,7 +336,7 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
     setConnectingFrom(null);
   };
 
-  const beginDrag = (event: React.MouseEvent<HTMLDivElement>, node: BuilderNode) => {
+  const beginDrag = (event: React.MouseEvent<HTMLButtonElement>, node: BuilderNode) => {
     if (event.button !== 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
     setDrag({
@@ -392,6 +398,9 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
         <div className="ag-builder-sidebar-foot">
           <button className="ag-builder-action ag-builder-secondary" onClick={clearCanvas}>
             Clear Canvas
+          </button>
+          <button className="ag-builder-action ag-builder-primary">
+            Save Draft
           </button>
         </div>
       </aside>
@@ -462,22 +471,14 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
             )}
 
             {nodes.map((node) => (
-              <div
+              <button
                 key={node.id}
-                role="button"
-                tabIndex={0}
                 className={`ag-builder-node ${selectedNodeId === node.id ? "selected" : ""} ${connectingFrom === node.id ? "connecting" : ""}`}
                 style={{ left: node.x, top: node.y, "--node-accent": node.accent } as React.CSSProperties}
                 onMouseDown={(event) => beginDrag(event, node)}
                 onClick={(event) => {
                   event.stopPropagation();
                   handleNodeClick(node.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    handleNodeClick(node.id);
-                  }
                 }}
               >
                 <button
@@ -498,7 +499,7 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
                 <div className="ag-builder-node-title">{node.title}</div>
                 <div className="ag-builder-node-subtitle">{node.subtitle}</div>
                 <div className="ag-builder-node-chip">{node.config.connector}</div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -680,15 +681,10 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
               From Node
               <select
                 value={selectedEdge.from}
-                onChange={(e) => {
-                  const newFrom = e.target.value;
-                  if (newFrom === selectedEdge.to) return;
-                  if (edges.some((ed) => ed.id !== selectedEdge.id && ed.from === newFrom && ed.to === selectedEdge.to)) return;
-                  updateSelectedEdge((edge) => ({ ...edge, from: newFrom }));
-                }}
+                onChange={(e) => updateSelectedEdge((edge) => ({ ...edge, from: e.target.value }))}
               >
                 {nodes.map((node) => (
-                  <option key={node.id} value={node.id} disabled={node.id === selectedEdge.to}>
+                  <option key={node.id} value={node.id}>
                     {node.title}
                   </option>
                 ))}
@@ -699,15 +695,10 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
               To Node
               <select
                 value={selectedEdge.to}
-                onChange={(e) => {
-                  const newTo = e.target.value;
-                  if (newTo === selectedEdge.from) return;
-                  if (edges.some((ed) => ed.id !== selectedEdge.id && ed.from === selectedEdge.from && ed.to === newTo)) return;
-                  updateSelectedEdge((edge) => ({ ...edge, to: newTo }));
-                }}
+                onChange={(e) => updateSelectedEdge((edge) => ({ ...edge, to: e.target.value }))}
               >
                 {nodes.map((node) => (
-                  <option key={node.id} value={node.id} disabled={node.id === selectedEdge.from}>
+                  <option key={node.id} value={node.id}>
                     {node.title}
                   </option>
                 ))}
