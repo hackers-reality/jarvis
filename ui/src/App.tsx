@@ -92,7 +92,6 @@ const NAV_MORE: NavEntry[] = [
 
 const SETTINGS_NAV: { section: SettingsSection; label: string }[] = [
   { section: "general", label: "General" },
-  { section: "profile", label: "Profile" },
   { section: "llm", label: "LLM" },
   { section: "channels", label: "Channels" },
   { section: "integrations", label: "Integrations" },
