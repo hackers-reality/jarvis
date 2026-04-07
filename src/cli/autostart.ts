@@ -1,13 +1,14 @@
 /**
  * Autostart Setup for J.A.R.V.I.S.
  *
- * Installs/uninstalls daemon autostart on system boot:
+ * Installs/uninstalls keepalive daemon autostart:
  * - Linux: systemd user service
- * - macOS: launchd plist
+ * - macOS: launchd user agent
  */
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { c, printOk, printErr, printWarn } from './helpers.ts';
 
@@ -22,6 +23,30 @@ function getBunPath(): string {
 function getJarvisPath(): string {
   // When installed globally, import.meta.dir points to the package
   return join(import.meta.dir, '../../bin/jarvis.ts');
+}
+
+function canUseSystemdUserService(): boolean {
+  try {
+    const version = Bun.spawnSync(['systemctl', '--user', '--version']);
+    if (version.exitCode !== 0) return false;
+
+    const state = Bun.spawnSync(['systemctl', '--user', 'is-system-running'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+
+    // "running" exits 0, degraded/offline can still manage units and usually exits non-zero.
+    // We only need the user manager to be reachable, not fully healthy.
+    if (state.exitCode === 0) return true;
+
+    const env = Bun.spawnSync(['systemctl', '--user', 'show-environment'], {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    return env.exitCode === 0;
+  } catch {
+    return false;
+  }
 }
 
 // ── systemd (Linux) ──────────────────────────────────────────────────
@@ -77,10 +102,40 @@ async function installSystemd(): Promise<boolean> {
     }
 
     printOk(`Installed systemd service: ${SYSTEMD_SERVICE}`);
-    printOk('Service will start on boot. To start now: systemctl --user start jarvis');
+    printOk('Service will restart automatically and start on boot.');
     return true;
   } catch (err) {
     printErr(`Failed to install systemd service: ${err}`);
+    return false;
+  }
+}
+
+async function startSystemdService(): Promise<boolean> {
+  try {
+    const start = Bun.spawnSync(['systemctl', '--user', 'start', 'jarvis.service']);
+    if (start.exitCode !== 0) {
+      printErr('Failed to start systemd service. You may need to run: systemctl --user start jarvis.service');
+      return false;
+    }
+
+    printOk('JARVIS keepalive service is running.');
+    return true;
+  } catch (err) {
+    printErr(`Failed to start systemd service: ${err}`);
+    return false;
+  }
+}
+
+function scheduleSystemdRestart(): boolean {
+  try {
+    const child = spawn('bash', ['-lc', 'sleep 1; systemctl --user restart jarvis.service >/dev/null 2>&1'], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env },
+    });
+    child.unref();
+    return true;
+  } catch {
     return false;
   }
 }
@@ -171,10 +226,47 @@ async function installLaunchd(): Promise<boolean> {
     }
 
     printOk(`Installed launchd plist: ${LAUNCHD_PLIST}`);
-    printOk('Service will start on login.');
+    printOk('Service will restart automatically and stay running after the terminal closes.');
     return true;
   } catch (err) {
     printErr(`Failed to install launchd plist: ${err}`);
+    return false;
+  }
+}
+
+async function startLaunchdService(): Promise<boolean> {
+  try {
+    const bootstrap = Bun.spawnSync(['launchctl', 'bootstrap', `gui/${process.getuid?.() ?? ''}`, LAUNCHD_PLIST]);
+    if (bootstrap.exitCode !== 0) {
+      const load = Bun.spawnSync(['launchctl', 'load', LAUNCHD_PLIST]);
+      if (load.exitCode !== 0) {
+        printWarn('Installed launchd plist, but could not start it immediately. It should start on next login.');
+        return false;
+      }
+    }
+
+    printOk('JARVIS launch agent is running.');
+    return true;
+  } catch (err) {
+    printWarn(`Installed launchd plist, but could not start it immediately: ${err}`);
+    return false;
+  }
+}
+
+function scheduleLaunchdRestart(): boolean {
+  try {
+    const uid = process.getuid?.();
+    const command = uid != null
+      ? `sleep 1; launchctl kickstart -k gui/${uid}/ai.jarvis.daemon >/dev/null 2>&1`
+      : `sleep 1; launchctl kickstart -k gui/$(id -u)/ai.jarvis.daemon >/dev/null 2>&1`;
+    const child = spawn('bash', ['-lc', command], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env },
+    });
+    child.unref();
+    return true;
+  } catch {
     return false;
   }
 }
@@ -211,6 +303,27 @@ export async function installAutostart(): Promise<boolean> {
 }
 
 /**
+ * Start the installed autostart service for the current platform.
+ */
+export async function startAutostartService(): Promise<boolean> {
+  if (process.platform === 'darwin') {
+    return startLaunchdService();
+  }
+  return startSystemdService();
+}
+
+/**
+ * Schedule a restart of the installed autostart service without blocking
+ * the current process. Useful when the API call is served by that service.
+ */
+export function scheduleAutostartRestart(): boolean {
+  if (process.platform === 'darwin') {
+    return scheduleLaunchdRestart();
+  }
+  return scheduleSystemdRestart();
+}
+
+/**
  * Uninstall autostart for the current platform.
  */
 export async function uninstallAutostart(): Promise<boolean> {
@@ -231,11 +344,22 @@ export function isAutostartInstalled(): boolean {
 }
 
 /**
+ * Check whether the current platform can use the keepalive manager.
+ * Linux and WSL2 require a reachable user systemd instance.
+ */
+export function isAutostartSupported(): boolean {
+  if (process.platform === 'darwin') {
+    return true;
+  }
+  return canUseSystemdUserService();
+}
+
+/**
  * Get the name of the autostart mechanism for the current platform.
  */
 export function getAutostartName(): string {
   if (process.platform === 'darwin') {
-    return 'launchd (Login Item)';
+    return 'launchd (User Agent)';
   }
   return 'systemd (User Service)';
 }

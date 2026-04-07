@@ -149,7 +149,18 @@ export function retrieveForMessage(message: string): EntityProfile[] {
 }
 
 function looksLikeSelfQuery(message: string): boolean {
-  return /\b(i|me|my|mine|myself)\b/i.test(message);
+  const normalized = message.trim().toLowerCase();
+  const explicitSelfQueryPatterns = [
+    /\babout me\b/,
+    /\bwho am i\b/,
+    /\bwhat do you know about me\b/,
+    /\bwhat do you remember about me\b/,
+    /\btell me about myself\b/,
+    /\bmy profile\b/,
+    /\bmy info\b/,
+    /\bmy information\b/,
+  ];
+  return explicitSelfQueryPatterns.some((pattern) => pattern.test(normalized));
 }
 
 /**

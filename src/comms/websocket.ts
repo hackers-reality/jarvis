@@ -100,6 +100,10 @@ export class WebSocketServer {
     this.authToken = token;
   }
 
+  setCorsOrigin(origin: string): void {
+    this.corsOrigin = origin;
+  }
+
   setHandler(handler: WSClientHandler): void {
     this.handler = handler;
   }

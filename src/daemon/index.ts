@@ -57,6 +57,17 @@ let bgAgent: BackgroundAgentService | null = null;
 let awarenessService: import('../awareness/service.ts').AwarenessService | null = null;
 let goalService: import('../goals/service.ts').GoalService | null = null;
 
+function parsePublicOrigin(publicUrl: string | undefined, fallbackPort: number): string {
+  if (publicUrl) {
+    try {
+      return new URL(publicUrl).origin;
+    } catch {
+      console.warn(`[Daemon] Invalid daemon.public_url: ${publicUrl}`);
+    }
+  }
+  return `http://localhost:${fallbackPort}`;
+}
+
 /**
  * Parse command line arguments
  */
@@ -478,7 +489,9 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
       goalService: undefined,
       sidecarManager,
     };
-    setCorsOrigin(jarvisConfig.daemon.port);
+    const publicOrigin = parsePublicOrigin(jarvisConfig.daemon.public_url, jarvisConfig.daemon.port);
+    setCorsOrigin(publicOrigin);
+    wsService.setCorsOrigin(publicOrigin);
     const apiRoutes = createApiRoutes(apiContext);
     wsService.setApiRoutes(apiRoutes);
 
