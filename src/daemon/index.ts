@@ -40,6 +40,31 @@ import { SidecarManager } from "../sidecar/manager.ts";
 const DEFAULT_PORT = 3142;  // JARVIS port
 const DEFAULT_DATA_DIR = path.join(os.homedir(), '.jarvis');
 
+// Logger configuration
+const LOG_LEVEL = (process.env.JARVIS_LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error';
+const LOG_LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
+
+function shouldLog(level: string): boolean {
+  return LOG_LEVELS[level as keyof typeof LOG_LEVELS] >= LOG_LEVELS[LOG_LEVEL];
+}
+
+function logDebug(message: string): void {
+  if (shouldLog('debug')) console.log(`[DEBUG] ${message}`);
+}
+
+function logInfo(message: string): void {
+  if (shouldLog('info')) console.log(`[INFO] ${message}`);
+}
+
+function logWarn(message: string): void {
+  if (shouldLog('warn')) console.warn(`[WARN] ${message}`);
+}
+
+function logError(message: string, error?: unknown): void {
+  const errorMsg = error instanceof Error ? error.message : String(error);
+  console.error(`[ERROR] ${message}${errorMsg ? ': ' + errorMsg : ''}`);
+}
+
 export interface DaemonConfig {
   port: number;
   dbPath: string;
@@ -69,7 +94,7 @@ function parsePublicOrigin(publicUrl: string | undefined, fallbackPort: number):
 }
 
 /**
- * Parse command line arguments
+ * Parse command line arguments with validation
  */
 function parseArgs(): Partial<DaemonConfig> {
   const args = process.argv.slice(2);
@@ -79,7 +104,17 @@ function parseArgs(): Partial<DaemonConfig> {
     const arg = args[i];
     switch (arg) {
       case '--port':
-        config.port = parseInt(args[++i]!, 10);
+        const portStr = args[++i];
+        if (!portStr) {
+          logError('--port requires a value');
+          process.exit(1);
+        }
+        const port = parseInt(portStr, 10);
+        if (isNaN(port) || port < 1 || port > 65535) {
+          logError(`--port must be a number between 1 and 65535, got: ${portStr}`);
+          process.exit(1);
+        }
+        config.port = port;
         break;
       case '--db-path':
         config.dbPath = args[++i]!;
@@ -88,7 +123,17 @@ function parseArgs(): Partial<DaemonConfig> {
         config.dataDir = args[++i]!;
         break;
       case '--health-interval':
-        config.healthCheckInterval = parseInt(args[++i]!, 10);
+        const intervalStr = args[++i];
+        if (!intervalStr) {
+          logError('--health-interval requires a value');
+          process.exit(1);
+        }
+        const interval = parseInt(intervalStr, 10);
+        if (isNaN(interval) || interval < 1000) {
+          logError(`--health-interval must be >= 1000ms, got: ${intervalStr}`);
+          process.exit(1);
+        }
+        config.healthCheckInterval = interval;
         break;
       case '--no-local-tools':
         config.noLocalTools = true;
@@ -121,25 +166,48 @@ Example:
 }
 
 /**
- * Ensure data directory exists
+ * Ensure data directory exists with proper error handling
  */
 function ensureDataDir(dataDir: string): void {
   if (!existsSync(dataDir)) {
-    console.log(`[Daemon] Creating data directory: ${dataDir}`);
-    mkdirSync(dataDir, { recursive: true });
+    try {
+      logInfo(`Creating data directory: ${dataDir}`);
+      mkdirSync(dataDir, { recursive: true });
+      logDebug(`Data directory created successfully`);
+    } catch (err) {
+      logError(`Failed to create data directory ${dataDir}`, err);
+      process.exit(1);
+    }
+  } else {
+    logDebug(`Data directory exists: ${dataDir}`);
   }
 }
 
 /**
- * Log timestamp helper
+ * Log timestamp helper with configurable level
  */
-function logWithTimestamp(message: string): void {
+function logWithTimestamp(message: string, level: 'debug' | 'info' | 'warn' | 'error' = 'info'): void {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${message}`);
+  const levelStr = level.toUpperCase().padEnd(5);
+  const formatted = `[${timestamp}] [${levelStr}] ${message}`;
+  
+  switch (level) {
+    case 'debug':
+      if (shouldLog('debug')) console.log(formatted);
+      break;
+    case 'warn':
+      console.warn(formatted);
+      break;
+    case 'error':
+      console.error(formatted);
+      break;
+    default:
+      console.log(formatted);
+  }
 }
 
 /**
- * Handle graceful shutdown
+ * Handle graceful shutdown with proper logging
  */
 async function handleShutdown(signal: string): Promise<void> {
   if (shutdownInProgress) {
@@ -148,59 +216,91 @@ async function handleShutdown(signal: string): Promise<void> {
   }
 
   shutdownInProgress = true;
-  console.log(`\n[Daemon] Received ${signal}, shutting down gracefully...`);
+  logWithTimestamp(`Received ${signal}, initiating graceful shutdown`, 'info');
 
   try {
     // Clear heartbeat timer
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
+      logDebug('Heartbeat timer cleared');
     }
 
     // Stop commitment executor
     if (commitmentExecutor) {
       commitmentExecutor.stop();
       commitmentExecutor = null;
+      logDebug('Commitment executor stopped');
     }
 
     // Stop goal service
     if (goalService) {
       await goalService.stop();
       goalService = null;
+      logDebug('Goal service stopped');
     }
 
     // Stop awareness service
     if (awarenessService) {
       await awarenessService.stop();
       awarenessService = null;
+      logDebug('Awareness service stopped');
     }
 
     // Stop background agent (separate browser)
     if (bgAgent) {
       await bgAgent.stop();
       bgAgent = null;
+      logDebug('Background agent stopped');
     }
 
     // Stop health monitor
     if (healthMonitor) {
       healthMonitor.stop();
+      logDebug('Health monitor stopped');
     }
 
     // Stop all services (reverse order: websocket -> observers -> agent)
     if (registry) {
       await registry.stopAll();
+      logDebug('All services stopped');
     }
 
     // Close database
     closeDb();
-    console.log('[Daemon] Database closed');
+    logDebug('Database closed');
 
-    console.log('[Daemon] Shutdown complete');
+    logWithTimestamp('Shutdown complete', 'info');
     process.exit(0);
   } catch (error) {
-    console.error('[Daemon] Error during shutdown:', error);
+    logError('Error during shutdown', error);
     process.exit(1);
   }
+}
+
+/**
+ * Validate environment and configuration at startup
+ */
+function validateEnvironment(): void {
+  logInfo(`Environment: NODE_ENV=${process.env.NODE_ENV ?? 'development'}, LOG_LEVEL=${LOG_LEVEL}`);
+  
+  // Validate NODE_ENV if set
+  if (process.env.NODE_ENV && !['development', 'production', 'test'].includes(process.env.NODE_ENV)) {
+    logWarn(`Invalid NODE_ENV: ${process.env.NODE_ENV}, should be 'development', 'production', or 'test'`);
+  }
+  
+  // Check for essential API keys in environment
+  if (process.env.JARVIS_API_KEY) {
+    logDebug('JARVIS_API_KEY set via environment');
+  }
+  
+  // Validate home directory
+  const home = os.homedir();
+  if (!home || home === '/' || home.length === 0) {
+    logError(`Invalid home directory: ${home}`);
+    process.exit(1);
+  }
+  logDebug(`Home directory: ${home}`);
 }
 
 /**
@@ -225,17 +325,19 @@ Just A Rather Very Intelligent System
 }
 
 /**
- * Start the JARVIS daemon
+ * Start the JARVIS daemon with comprehensive startup validation
  */
 export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<void> {
+  // 0. Validate environment first
+  validateEnvironment();
   // Load config from YAML (with defaults)
   let jarvisConfig;
   try {
     jarvisConfig = await loadConfig();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`\n[Daemon] Failed to parse config file: ${message}`);
-    console.error('[Daemon] Fix the YAML syntax in ~/.jarvis/config.yaml or delete it to use defaults.\n');
+    logError(`Failed to parse config file: ${message}`);
+    logError('Fix the YAML syntax in ~/.jarvis/config.yaml or delete it to use defaults.');
     process.exit(1);
   }
 
@@ -267,9 +369,9 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     ensureDataDir(config.dataDir);
 
     // 2. Initialize database
-    logWithTimestamp(`Initializing database at ${config.dbPath}`);
+    logWithTimestamp(`Initializing database at ${config.dbPath}`, 'info');
     initDatabase(config.dbPath);
-    logWithTimestamp('Database initialized successfully');
+    logWithTimestamp('Database initialized successfully', 'info');
 
     // 2a. Seed webapp templates (upserts, safe to run every startup)
     const { seedWebappTemplates } = await import('../vault/webapp-template-seeds.ts');
@@ -278,7 +380,7 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     // 2b. Load LLM settings from DB + encrypted keychain, merge into config
     const { mergeLLMSettingsIntoConfig } = await import('./llm-settings.ts');
     mergeLLMSettingsIntoConfig(jarvisConfig);
-    logWithTimestamp('LLM settings loaded from database');
+    logWithTimestamp('LLM settings loaded from database', 'info');
 
     // 3. Create service registry
     registry = new ServiceRegistry();
@@ -1047,7 +1149,7 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
       console.log('[Daemon] Heartbeat disabled (user-driven-only mode)');
     }
 
-    logWithTimestamp(`JARVIS daemon running on port ${config.port}`);
+    logWithTimestamp(`JARVIS daemon ready on port ${config.port}`, 'info');
     console.log('');
     console.log('Press Ctrl+C to stop');
     console.log('');
@@ -1057,7 +1159,7 @@ export async function startDaemon(userConfig?: Partial<DaemonConfig>): Promise<v
     console.log('');
 
   } catch (error) {
-    console.error('[Daemon] Fatal error during startup:', error);
+    logError('Fatal error during startup', error);
     process.exit(1);
   }
 }
