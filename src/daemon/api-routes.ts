@@ -110,6 +110,12 @@ import {
   getUpdateStatus,
   startUpdateJob,
 } from './update-manager.ts';
+import {
+  getAutostartName,
+  isAutostartInstalled,
+  isAutostartSupported,
+  scheduleAutostartRestart,
+} from '../cli/autostart.ts';
 
 export type ApiContext = {
   healthMonitor: HealthMonitor;
@@ -782,6 +788,58 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           heartbeat: config.heartbeat,
           active_role: config.active_role,
         });
+      },
+    },
+
+    // Back-compat helpers for older settings clients
+    '/api/config/general': {
+      GET: () => {
+        const config = ctx.config;
+        return json({
+          personality: config.personality,
+          authority: config.authority,
+          active_role: config.active_role,
+          heartbeat: config.heartbeat,
+        });
+      },
+    },
+
+    '/api/config/heartbeat': {
+      GET: () => json(ctx.config.heartbeat),
+    },
+
+    '/api/system/autostart': {
+      GET: () => {
+        const supported = isAutostartSupported();
+        const installed = isAutostartInstalled();
+        return json({
+          platform: process.platform,
+          manager: getAutostartName(),
+          installed,
+          keepalive_supported: supported,
+          restart_supported: supported && installed,
+        });
+      },
+    },
+
+    '/api/system/autostart/restart': {
+      POST: () => {
+        const supported = isAutostartSupported();
+        const installed = isAutostartInstalled();
+
+        if (!supported) {
+          return error('Autostart keepalive is not supported on this platform.', 400);
+        }
+        if (!installed) {
+          return error('Autostart keepalive is not installed yet.', 400);
+        }
+
+        const scheduled = scheduleAutostartRestart();
+        if (!scheduled) {
+          return error('Failed to schedule 24/7 service restart.', 500);
+        }
+
+        return json({ ok: true, message: '24/7 service restart scheduled.' });
       },
     },
 

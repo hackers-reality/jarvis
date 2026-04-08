@@ -94,10 +94,6 @@ RUN sed -i 's/\r$//' /app/bin/jarvis.ts && \
 RUN groupadd -r jarvis && useradd -r -g jarvis -d /data -s /bin/bash jarvis && \
     mkdir -p /data && chown jarvis:jarvis /data && chown -R jarvis:jarvis /app
 
-# Copy and setup startup script
-COPY start.sh ./start.sh
-RUN chmod +x start.sh
-
 ENV JARVIS_HOME=/data
 ENV NODE_ENV=production
 
@@ -108,5 +104,5 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD bun -e "fetch('http://localhost:3142/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-ENTRYPOINT ["./start.sh"]
+ENTRYPOINT ["jarvis"]
 CMD ["start", "--no-open", "--data-dir", "/data", "--no-local-tools"]

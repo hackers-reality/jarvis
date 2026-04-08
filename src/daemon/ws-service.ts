@@ -133,6 +133,10 @@ export class WebSocketService implements Service {
     this.wsServer.setPublicDir(dir);
   }
 
+  setCorsOrigin(origin: string): void {
+    this.wsServer.setCorsOrigin(origin);
+  }
+
   setAuthToken(token: string): void {
     this.wsServer.setAuthToken(token);
   }
