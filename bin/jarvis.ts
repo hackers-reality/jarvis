@@ -288,18 +288,23 @@ function openDashboard(port: number): void {
   try {
     const platform = process.platform;
     if (platform === 'darwin') {
+      // macOS: use 'open' command
       Bun.spawn(['open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
+    } else if (platform === 'win32') {
+      // Windows: use 'start' command (CMD.exe)
+      Bun.spawn(['cmd', '/c', `start ${url}`], { stdio: ['ignore', 'ignore', 'ignore'] });
     } else {
-      // Check WSL first
+      // Linux: check for WSL first, then fall back to xdg-open
       const { readFileSync } = require('node:fs');
       try {
         const version = readFileSync('/proc/version', 'utf-8');
         if (version.toLowerCase().includes('microsoft')) {
+          // WSL: use wslview to open in Windows browser
           Bun.spawn(['wslview', url], { stdio: ['ignore', 'ignore', 'ignore'] });
           return;
         }
       } catch {}
-      // Regular Linux
+      // Regular Linux: use xdg-open
       Bun.spawn(['xdg-open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
     }
   } catch {

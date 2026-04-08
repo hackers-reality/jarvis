@@ -10,8 +10,11 @@
  */
 
 import { BrowserController } from '../src/actions/browser/session.ts';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
-const browser = new BrowserController(9222, `${process.env.HOME}/.jarvis/browser/profile`);
+const profilePath = join(homedir(), '.jarvis', 'browser', 'profile');
+const browser = new BrowserController(9222, profilePath);
 const targetChat = process.argv[2] || ''; // optional: name of chat to open
 
 function printElements(elements: any[]) {
