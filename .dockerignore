@@ -64,3 +64,7 @@ trace.json*
 .npmignore
 install.sh
 config.example.yaml
+IMPROVEMENTS_LOG.md
+test.ps1
+tmp-build/
+tmp-build-llm/

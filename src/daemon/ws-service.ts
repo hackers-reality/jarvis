@@ -587,7 +587,6 @@ export class WebSocketService implements Service {
     const text = payload?.text;
     const projectId = payload?.projectId ?? null;
     const chatMode = payload?.chat_mode ?? (payload?.fast_mode ? 'fast' : 'off');
-    const isFastMode = chatMode === 'fast';
     const llmProviderOverride = payload?.llm_provider_override ?? null;
     const llmModelOverride = payload?.llm_model_override ?? null;
 
@@ -685,9 +684,45 @@ If the user wants to create a new project, tell them to use the Site Builder pag
         setDefaultCwd(projectPath);
       }
 
-      const { stream, onComplete } = isFastMode
-        ? this.agentService.streamFastMessage(text, channel)
-        : this.agentService.streamMessage(text, channel, siteContext, llmProviderOverride, llmModelOverride);
+      let streamResult: {
+        stream: AsyncIterable<any>;
+        onComplete: (fullText: string) => Promise<void>;
+      };
+
+      if (chatMode === 'fast') {
+        streamResult = this.agentService.streamFastMessage(text, channel);
+      } else if (chatMode === 'auto') {
+        const decision = await this.agentService.handleFastModeTurn(text, channel);
+        if (decision.kind === 'reply') {
+          const replyText = decision.response;
+          streamResult = {
+            stream: (async function* () {
+              if (replyText) {
+                yield { type: 'text', text: replyText };
+              }
+              yield {
+                type: 'done',
+                response: {
+                  content: replyText,
+                  tool_calls: [],
+                  usage: { input_tokens: 0, output_tokens: 0 },
+                  model: 'auto-fast-planner',
+                  finish_reason: 'stop',
+                },
+              };
+            })(),
+            onComplete: async () => {
+              await this.agentService.finalizeFastModeReply(text, replyText, channel);
+            },
+          };
+        } else {
+          streamResult = this.agentService.streamFastApprovedAction(decision.request, channel);
+        }
+      } else {
+        streamResult = this.agentService.streamMessage(text, channel, siteContext, llmProviderOverride, llmModelOverride);
+      }
+
+      const { stream, onComplete } = streamResult;
 
       // Set up streaming TTS: speak sentences as they arrive
       const ttsActive = !!(this.ttsProvider && ws);

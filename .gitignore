@@ -52,3 +52,8 @@ sidecar/desktop-bridge/bin/
 sidecar/desktop-bridge/obj/
 
 eng.traineddata
+
+# local scratch and temp outputs
+tmp-build/
+tmp-build-llm/
+test.ps1

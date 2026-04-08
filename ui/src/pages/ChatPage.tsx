@@ -114,8 +114,8 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
           : null
     : null;
 
-  const chatModeLabel = chatMode === "fast" ? "Fast Chat" : chatMode === "auto" ? "Auto Chat" : "Chat";
-  const chatModeState = chatMode === "fast" ? "No tools" : chatMode === "auto" ? "Tools on" : "Off";
+  const chatModeLabel = chatMode === "fast" ? "Fast Chat" : chatMode === "auto" ? "Auto Chat" : "Standard Chat";
+  const chatModeState = chatMode === "fast" ? "No tools" : chatMode === "auto" ? "Smart route" : "Tools on";
   const chatModeClass = chatMode === "fast"
     ? "chat-fast-toggle-fast"
     : chatMode === "auto"
