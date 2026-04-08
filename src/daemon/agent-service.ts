@@ -271,8 +271,15 @@ export class AgentService implements Service, IAgentService {
 
   /**
    * Stream a message through the agent. Returns a stream and an onComplete callback.
+   * Optional: override the primary LLM provider or model for this message.
    */
-  streamMessage(text: string, channel: string = 'websocket', siteContext?: string): {
+  streamMessage(
+    text: string,
+    channel: string = 'websocket',
+    siteContext?: string,
+    llmProviderOverride?: string | null,
+    llmModelOverride?: string | null
+  ): {
     stream: AsyncIterable<LLMStreamEvent>;
     onComplete: (fullText: string) => Promise<void>;
   } {
@@ -281,7 +288,7 @@ export class AgentService implements Service, IAgentService {
       systemPrompt += '\n\n' + siteContext;
     }
 
-    const stream = this.orchestrator.streamMessage(systemPrompt, text);
+    const stream = this.orchestrator.streamMessage(systemPrompt, text, llmProviderOverride, llmModelOverride);
 
     const onComplete = async (fullText: string): Promise<void> => {
       // Note: orchestrator already adds assistant response to history

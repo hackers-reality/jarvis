@@ -114,7 +114,10 @@ export type SiteEvent = {
 
 export type ChatSendOptions = {
   projectId?: string;
+  chatMode?: "off" | "fast" | "auto";
   fastMode?: boolean;
+  llmProvider?: string;  // Override primary provider for this message
+  llmModel?: string;     // Override model for this message
 };
 
 export function useWebSocket() {
@@ -452,8 +455,11 @@ export function useWebSocket() {
         type: "chat",
         payload: {
           text,
+          ...(options?.chatMode ? { chat_mode: options.chatMode } : {}),
           ...(options?.fastMode ? { fast_mode: true } : {}),
           ...(options?.projectId ? { projectId: options.projectId } : {}),
+          ...(options?.llmProvider ? { llm_provider_override: options.llmProvider } : {}),
+          ...(options?.llmModel ? { llm_model_override: options.llmModel } : {}),
         },
         id,
         timestamp: Date.now(),

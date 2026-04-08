@@ -285,8 +285,14 @@ export class AgentOrchestrator {
    * Stream a message through the primary agent with tool execution loop.
    * Yields text/tool_call events through all iterations.
    * Only emits 'done' when the final response is complete.
+   * Optional: override primary LLM provider for this message.
    */
-  async *streamMessage(systemPrompt: string, message: string): AsyncIterable<LLMStreamEvent> {
+  async *streamMessage(
+    systemPrompt: string,
+    message: string,
+    llmProviderOverride?: string | null,
+    llmModelOverride?: string | null
+  ): AsyncIterable<LLMStreamEvent> {
     const primary = this.getPrimary();
     if (!primary) {
       throw new Error('No primary agent exists. Create one first.');
@@ -313,90 +319,101 @@ export class AgentOrchestrator {
       return;
     }
 
-    // Build local messages array for this turn
-    const messages: LLMMessage[] = [
-      { role: 'system', content: systemPrompt },
-      ...primary.getMessages(),
-    ];
+    // Save original primary if we're overriding it
+    const originalPrimary = this.llmManager.getPrimary();
+    const shouldRestore = llmProviderOverride && llmProviderOverride !== originalPrimary;
+    if (shouldRestore) {
+      this.llmManager.setPrimary(llmProviderOverride);
+    }
 
-    const tools = this.getLLMTools();
-    const totalUsage = { input_tokens: 0, output_tokens: 0 };
-    let finalText = '';
-    let responseModel = 'unknown';
+    try {
+      // Build local messages array for this turn
+      const messages: LLMMessage[] = [
+        { role: 'system', content: systemPrompt },
+        ...primary.getMessages(),
+      ];
 
-    // Tool execution loop
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
-      let accumulatedText = '';
-      const toolCalls: LLMToolCall[] = [];
-      let doneResponse: LLMResponse | null = null;
+      const tools = this.getLLMTools();
+      const totalUsage = { input_tokens: 0, output_tokens: 0 };
+      let finalText = '';
+      let responseModel = 'unknown';
 
-      // Stream from LLM
-      for await (const event of this.llmManager.stream(messages, { tools })) {
-        if (event.type === 'text') {
-          accumulatedText += event.text;
-          yield event; // Forward text chunks to client
-        } else if (event.type === 'tool_call') {
-          toolCalls.push(event.tool_call);
-          yield event; // Forward tool_call events to client
-        } else if (event.type === 'done') {
-          doneResponse = event.response;
-          totalUsage.input_tokens += event.response.usage.input_tokens;
-          totalUsage.output_tokens += event.response.usage.output_tokens;
-          responseModel = event.response.model;
-          // Don't yield done yet — may need more iterations
-        } else if (event.type === 'error') {
-          yield event;
+      // Tool execution loop
+      for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+        let accumulatedText = '';
+        const toolCalls: LLMToolCall[] = [];
+        let doneResponse: LLMResponse | null = null;
+
+        // Stream from LLM (with optional model override in options)
+        for await (const event of this.llmManager.stream(messages, {
+          tools,
+          ...(llmModelOverride ? { model: llmModelOverride } : {}),
+        })) {
+          if (event.type === 'text') {
+            accumulatedText += event.text;
+            yield event; // Forward text chunks to client
+          } else if (event.type === 'tool_call') {
+            toolCalls.push(event.tool_call);
+            yield event; // Forward tool_call events to client
+          } else if (event.type === 'done') {
+            doneResponse = event.response;
+            totalUsage.input_tokens += event.response.usage.input_tokens;
+            totalUsage.output_tokens += event.response.usage.output_tokens;
+            responseModel = event.response.model;
+            // Don't yield done yet — may need more iterations
+          } else if (event.type === 'error') {
+            yield event;
+            return;
+          }
+        }
+
+        // Ensure doneResponse is never null (stream may end without 'done' event)
+        if (!doneResponse) {
+          doneResponse = {
+            content: accumulatedText,
+            tool_calls: toolCalls,
+            usage: { input_tokens: 0, output_tokens: 0 },
+            model: responseModel,
+            finish_reason: 'stop',
+          };
+        }
+
+        // No tool calls — this is the final response
+        if (toolCalls.length === 0) {
+          finalText += accumulatedText;
+
+          // Check if we stopped due to token limit (truncation)
+          const wasLength = doneResponse?.finish_reason === 'length';
+          if (wasLength && !finalText.includes('[SYSTEM WARNING')) {
+            const truncWarning = '\n\n[Response was truncated due to output token limits. If you asked for long content, ask to continue or use shorter chunks.]';
+            finalText += truncWarning;
+            yield { type: 'text', text: truncWarning };
+          }
+
+          yield {
+            type: 'done',
+            response: {
+              content: finalText,
+              tool_calls: [],
+              usage: totalUsage,
+              model: responseModel,
+              finish_reason: wasLength ? 'length' : 'stop',
+            },
+          };
+          // Add final response to persistent history (only user-facing text)
+          primary.addMessage('assistant', finalText);
           return;
         }
-      }
 
-      // Ensure doneResponse is never null (stream may end without 'done' event)
-      if (!doneResponse) {
-        doneResponse = {
-          content: accumulatedText,
-          tool_calls: toolCalls,
-          usage: { input_tokens: 0, output_tokens: 0 },
-          model: responseModel,
-          finish_reason: 'stop',
-        };
-      }
-
-      // No tool calls — this is the final response
-      if (toolCalls.length === 0) {
+        // Tool calls present — execute them
         finalText += accumulatedText;
 
-        // Check if we stopped due to token limit (truncation)
-        const wasLength = doneResponse?.finish_reason === 'length';
-        if (wasLength && !finalText.includes('[SYSTEM WARNING')) {
-          const truncWarning = '\n\n[Response was truncated due to output token limits. If you asked for long content, ask to continue or use shorter chunks.]';
-          finalText += truncWarning;
-          yield { type: 'text', text: truncWarning };
-        }
-
-        yield {
-          type: 'done',
-          response: {
-            content: finalText,
-            tool_calls: [],
-            usage: totalUsage,
-            model: responseModel,
-            finish_reason: wasLength ? 'length' : 'stop',
-          },
-        };
-        // Add final response to persistent history (only user-facing text)
-        primary.addMessage('assistant', finalText);
-        return;
-      }
-
-      // Tool calls present — execute them
-      finalText += accumulatedText;
-
-      // Add assistant message with tool calls to local messages
-      messages.push({
-        role: 'assistant',
-        content: accumulatedText,
-        tool_calls: toolCalls,
-      });
+        // Add assistant message with tool calls to local messages
+        messages.push({
+          role: 'assistant',
+          content: accumulatedText,
+          tool_calls: toolCalls,
+        });
 
       // Execute each tool and add results
       for (const tc of toolCalls) {
@@ -434,6 +451,12 @@ export class AgentOrchestrator {
       },
     };
     primary.addMessage('assistant', finalText);
+    } finally {
+      // Restore original primary provider if we overrode it
+      if (shouldRestore && this.llmManager) {
+        this.llmManager.setPrimary(originalPrimary);
+      }
+    }
   }
 
   /**

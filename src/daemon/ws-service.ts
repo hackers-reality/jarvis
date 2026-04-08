@@ -575,9 +575,21 @@ export class WebSocketService implements Service {
    * Auto-creates a task for non-trivial messages so the task board tracks agent work.
    */
   private async handleChat(msg: WSMessage, ws?: ServerWebSocket<unknown>): Promise<WSMessage | void> {
-    const payload = msg.payload as { text?: string; channel?: string; projectId?: string };
+    const payload = msg.payload as {
+      text?: string;
+      channel?: string;
+      projectId?: string;
+      fast_mode?: boolean;
+      chat_mode?: 'off' | 'fast' | 'auto';
+      llm_provider_override?: string;
+      llm_model_override?: string;
+    };
     const text = payload?.text;
     const projectId = payload?.projectId ?? null;
+    const chatMode = payload?.chat_mode ?? (payload?.fast_mode ? 'fast' : 'off');
+    const isFastMode = chatMode === 'fast';
+    const llmProviderOverride = payload?.llm_provider_override ?? null;
+    const llmModelOverride = payload?.llm_model_override ?? null;
 
     if (!text) {
       return {
@@ -673,7 +685,9 @@ If the user wants to create a new project, tell them to use the Site Builder pag
         setDefaultCwd(projectPath);
       }
 
-      const { stream, onComplete } = this.agentService.streamMessage(text, channel, siteContext);
+      const { stream, onComplete } = isFastMode
+        ? this.agentService.streamFastMessage(text, channel)
+        : this.agentService.streamMessage(text, channel, siteContext, llmProviderOverride, llmModelOverride);
 
       // Set up streaming TTS: speak sentences as they arrive
       const ttsActive = !!(this.ttsProvider && ws);

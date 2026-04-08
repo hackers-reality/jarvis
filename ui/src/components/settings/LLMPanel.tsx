@@ -239,11 +239,6 @@ export function LLMPanel() {
         body: JSON.stringify(body),
       });
       setMessage({ text: resp.message, type: "ok" });
-      setAnthropicKey("");
-      setOpenaiKey("");
-      setGroqKey("");
-      setGeminiKey("");
-      setOpenrouterKey("");
       refetch();
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : "Save failed", type: "error" });
