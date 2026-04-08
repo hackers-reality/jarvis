@@ -4,6 +4,8 @@ export type UpdateInfo = {
   latest_url: string | null;
   latest_published_at: string | null;
   has_update: boolean;
+  popup_visible?: boolean;
+  dismissed_version?: string | null;
   update_status: string;
   update_message: string;
   check_error: string | null;

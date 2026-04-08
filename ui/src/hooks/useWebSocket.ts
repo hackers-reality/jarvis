@@ -19,6 +19,7 @@ export type ChatMessage = {
   role: MessageRole;
   content: string;
   timestamp: number;
+  approvalPrompt?: string;
   toolCalls?: ToolCall[];
   subAgentEvents?: SubAgentEvent[];
   source?: string; // 'heartbeat', 'proactive', 'sub-agent'
