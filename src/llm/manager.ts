@@ -11,6 +11,8 @@ export class LLMManager {
   private primaryProvider = '';
   private fallbackChain: string[] = [];
   private static readonly MAX_RETRIES_PER_PROVIDER = 3;
+  private static readonly REQUEST_TIMEOUT_MS = 90000; // 90 second timeout for LLM calls
+  private static readonly isDebugging = process.env.JARVIS_LOG_LEVEL === 'debug' || process.env.DEBUG_LLM === 'true';
 
   constructor() {}
 
@@ -70,6 +72,38 @@ export class LLMManager {
   }
 
   /**
+   * Add request timeout wrapper for network resilience
+   */
+  private async withTimeout<T>(promise: Promise<T>, provider: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`LLM request to ${provider} timed out after ${LLMManager.REQUEST_TIMEOUT_MS}ms`)),
+          LLMManager.REQUEST_TIMEOUT_MS
+        )
+      )
+    ]);
+  }
+
+  /**
+   * Classify error for better retry logic
+   */
+  private shouldRetry(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    
+    const msg = error.message.toLowerCase();
+    // Retry on network/timeout errors, not on auth/validation errors
+    return msg.includes('timeout') || 
+           msg.includes('econnrefused') || 
+           msg.includes('enotfound') ||
+           msg.includes('network') ||
+           msg.includes('temporarily unavailable') ||
+           msg.includes('429') ||  // rate limit
+           msg.includes('503');    // service unavailable
+  }
+
+  /**
    * Temporarily override the primary provider for a single call.
    * Used for per-message LLM selection from chat dashboard.
    */
@@ -87,11 +121,22 @@ export class LLMManager {
     const errors: string[] = [];
     for (let attempt = 1; attempt <= LLMManager.MAX_RETRIES_PER_PROVIDER; attempt++) {
       try {
-        return await provider.chat(messages, options);
+        const result = await this.withTimeout(provider.chat(messages, options), providerName);
+        if (LLMManager.isDebugging && attempt > 1) {
+          console.log(`[DEBUG] LLM ${providerName} succeeded on retry attempt ${attempt}`);
+        }
+        return result;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         errors.push(`attempt ${attempt}: ${errorMsg}`);
-        console.error(`Provider ${providerName} failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER}):`, errorMsg);
+        
+        const shouldRetry = this.shouldRetry(err);
+        console.error(
+          `[LLM] Provider ${providerName} failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER})${!shouldRetry ? ' [no retry]' : ''}: ${errorMsg}`
+        );
+        
+        // Don't retry on fatal errors (auth, validation)
+        if (!shouldRetry && attempt > 1) break;
       }
     }
 
@@ -110,11 +155,21 @@ export class LLMManager {
     const errors: string[] = [];
     for (let attempt = 1; attempt <= LLMManager.MAX_RETRIES_PER_PROVIDER; attempt++) {
       try {
-        return await provider.chat(messages, options);
+        const result = await this.withTimeout(provider.chat(messages, options), providerName);
+        if (LLMManager.isDebugging && attempt > 1) {
+          console.log(`[DEBUG] LLM ${providerName} succeeded on retry attempt ${attempt}`);
+        }
+        return result;
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         errors.push(`attempt ${attempt}: ${errorMsg}`);
-        console.error(`Provider ${providerName} failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER}):`, errorMsg);
+        
+        const shouldRetry = this.shouldRetry(err);
+        console.error(
+          `[LLM] Provider ${providerName} failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER})${!shouldRetry ? ' [no retry]' : ''}: ${errorMsg}`
+        );
+        
+        if (!shouldRetry && attempt > 1) break;
       }
     }
 
@@ -135,11 +190,13 @@ export class LLMManager {
     for (let attempt = 1; attempt <= LLMManager.MAX_RETRIES_PER_PROVIDER; attempt++) {
       try {
         let hasError = false;
-        for await (const event of provider.stream(messages, options)) {
+        for await (const event of this.withTimeout(provider.stream(messages, options), providerName)) {
           if (event.type === 'error') {
             hasError = true;
             errors.push(`attempt ${attempt}: ${event.error}`);
-            console.error(`Provider ${providerName} stream error (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER}):`, event.error);
+            console.error(
+              `[LLM] Provider ${providerName} stream error (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER}): ${event.error}`
+            );
             break;
           }
           yield event;
@@ -151,7 +208,13 @@ export class LLMManager {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         errors.push(`attempt ${attempt}: ${errorMsg}`);
-        console.error(`Provider ${providerName} stream failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER}):`, errorMsg);
+        
+        const shouldRetry = this.shouldRetry(err);
+        console.error(
+          `[LLM] Provider ${providerName} stream failed (attempt ${attempt}/${LLMManager.MAX_RETRIES_PER_PROVIDER})${!shouldRetry ? ' [no retry]' : ''}: ${errorMsg}`
+        );
+        
+        if (!shouldRetry && attempt > 1) break;
       }
     }
 
