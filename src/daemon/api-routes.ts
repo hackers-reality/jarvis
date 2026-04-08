@@ -167,6 +167,7 @@ async function syncActiveRoleAuthorityLevel(ctx: ApiContext, authorityLevel: num
   const primary = ctx.agentService.getOrchestrator().getPrimary();
   if (!primary?.agent?.role) return;
   primary.agent.role.authority_level = authorityLevel;
+}
 
 type AgentTaskSnapshot = {
   id: string;
@@ -634,7 +635,6 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           const busy = taskManager.isAgentBusy(spawned.agent.id)
             || spawned.agent.status === 'active'
             || Boolean(spawned.agent.agent.current_task);
-
           return json({
             ...spawned.agent.toJSON(),
             busy,
