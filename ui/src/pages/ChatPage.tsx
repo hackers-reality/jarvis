@@ -18,12 +18,12 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
   // Available LLM providers for the dropdown
   const providers = ["anthropic", "openai", "groq", "gemini", "ollama", "openrouter"];
   const models: Record<string, string[]> = {
-    anthropic: ["claude-opus", "claude-sonnet-4", "claude-3-5-sonnet"],
-    openai: ["gpt-4o", "gpt-4-turbo", "gpt-4"],
-    groq: ["llama-3.3-70b", "mixtral-8x7b"],
-    gemini: ["gemini-2-flash", "gemini-pro"],
-    ollama: ["llama2", "llama3", "mistral"],
-    openrouter: ["anthropic/claude-3-5-sonnet", "openai/gpt-4-turbo"],
+    anthropic: ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001"],
+    openai: ["gpt-5.4", "gpt-5.4-thinking", "gpt-5.4-pro", "gpt-5.3-instant", "gpt-5-mini", "gpt-5-nano", "gpt-5.1-codex", "gpt-4.1", "o3", "o4-mini"],
+    groq: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "qwen/qwen3-32b", "deepseek-r1-distill-llama-70b"],
+    gemini: ["gemini-3.1-pro-preview", "gemini-3-deep-think", "gemini-3-flash-preview", "gemini-3-1-flash-lite-preview", "gemini-2.5-pro", "gemini-2.5-flash"],
+    ollama: ["llama3", "llama3.1", "llama3.2", "mistral", "mixtral", "codellama", "qwen2.5", "deepseek-coder-v2", "phi3"],
+    openrouter: ["anthropic/claude-sonnet-4", "anthropic/claude-opus-4", "anthropic/claude-haiku-4", "openai/gpt-5.4", "openai/o3", "google/gemini-2.5-pro", "google/gemini-2.5-flash", "deepseek/deepseek-r1", "meta-llama/llama-4-maverick", "mistralai/mistral-large"],
   };
 
   const [chatMode, setChatMode] = React.useState<ChatMode>(() => {
@@ -129,7 +129,7 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
   const providerModels = selectedProvider ? (models[selectedProvider] ?? []) : [];
   const effectiveModel = customModel.trim() || selectedModel;
   const llmSummary = selectedProvider
-    ? `${selectedProvider}${effectiveModel ? ` / ${effectiveModel}` : " / auto"}`
+    ? `${selectedProvider}${effectiveModel ? ` / ${effectiveModel}` : " / default"}`
     : "auto";
 
   const handleProviderChange = (provider: string) => {

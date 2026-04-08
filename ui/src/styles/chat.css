@@ -41,7 +41,7 @@
 .chat-fast-toggle {
   position: absolute;
   right: 24px;
-  bottom: 108px;
+  bottom: 142px;
   z-index: 3;
   display: inline-flex;
   align-items: center;
@@ -949,7 +949,7 @@
    ================================================================ */
 .chat-llm-selector {
   position: absolute;
-  bottom: 24px;
+  bottom: 10px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -1076,7 +1076,7 @@ select.llm-selector-input {
    INPUT AREA
    ================================================================ */
 .chat-input-area {
-  padding: 16px 32px 24px;
+  padding: 12px 32px 68px;
   z-index: 1;
   position: relative;
   display: flex;
