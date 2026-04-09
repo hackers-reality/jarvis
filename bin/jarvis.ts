@@ -15,6 +15,7 @@
 import { join } from 'node:path';
 import { readFileSync, existsSync, openSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { acquireLock, releaseLock, isLocked, getLogPath } from '../src/daemon/pid.ts';
 import { c } from '../src/cli/helpers.ts';
 
@@ -96,7 +97,7 @@ async function cmdStart(args: string[]): Promise<void> {
   }
 
   if (!detach) {
-    // Run in foreground — acquire lock atomically (checks + locks in one step)
+    // Run in foreground â€” acquire lock atomically (checks + locks in one step)
     if (!acquireLock(process.pid)) {
       console.log(c.yellow('JARVIS is already running'));
       console.log(c.dim('  Stop it first with: jarvis stop'));
@@ -121,7 +122,7 @@ async function cmdStart(args: string[]): Promise<void> {
       process.exit(1);
     }
 
-    // Run in background — spawn a detached child process with log file
+    // Run in background â€” spawn a detached child process with log file
     console.log(c.cyan('Starting J.A.R.V.I.S. daemon...'));
 
     const logPath = getLogPath();
@@ -147,7 +148,7 @@ async function cmdStart(args: string[]): Promise<void> {
     }
 
     if (runningPid) {
-      console.log(c.green(`✓ JARVIS daemon started (PID ${runningPid})`));
+      console.log(c.green(`âœ“ JARVIS daemon started (PID ${runningPid})`));
       console.log(c.dim(`  Dashboard: http://localhost:${port ?? 3142}`));
       console.log(c.dim(`  Logs:      ${logPath}`));
       console.log(c.dim(`  Stop with: jarvis stop`));
@@ -156,7 +157,7 @@ async function cmdStart(args: string[]): Promise<void> {
         openDashboard(port ?? 3142);
       }
     } else {
-      console.log(c.red('✗ Failed to start daemon. Check logs:'));
+      console.log(c.red('âœ— Failed to start daemon. Check logs:'));
       console.log(c.dim(`  ${logPath}`));
       process.exit(1);
     }
@@ -187,7 +188,7 @@ async function cmdStop(): Promise<void> {
     }
 
     releaseLock();
-    console.log(c.green('✓ JARVIS daemon stopped.'));
+    console.log(c.green('âœ“ JARVIS daemon stopped.'));
   } catch (err) {
     console.error(c.red(`Failed to stop process ${pid}: ${err}`));
     releaseLock();
@@ -197,7 +198,7 @@ async function cmdStop(): Promise<void> {
 function cmdStatus(): void {
   const pid = isLocked();
   if (pid) {
-    console.log(`${c.green('●')} JARVIS is ${c.green('running')} (PID ${pid})`);
+    console.log(`${c.green('â—')} JARVIS is ${c.green('running')} (PID ${pid})`);
 
     // Try to read the port from config
     try {
@@ -214,7 +215,7 @@ function cmdStatus(): void {
 
     console.log(c.dim(`  Stop with: jarvis stop`));
   } else {
-    console.log(`${c.red('●')} JARVIS is ${c.red('stopped')}`);
+    console.log(`${c.red('â—')} JARVIS is ${c.red('stopped')}`);
     console.log(c.dim(`  Start with: jarvis start`));
   }
 }
@@ -276,6 +277,160 @@ function cmdLogs(args: string[]): void {
   }
 }
 
+function isGitRepo(dir: string): boolean {
+  const result = Bun.spawnSync(['git', 'rev-parse', '--is-inside-work-tree'], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+  return result.exitCode === 0;
+}
+
+function isContainerRuntime(): boolean {
+  return existsSync('/.dockerenv') || existsSync('/run/.containerenv');
+}
+
+function getUpdateSourceDir(): string | null {
+  if (isGitRepo(PACKAGE_ROOT)) {
+    return PACKAGE_ROOT;
+  }
+
+  const installDir = join(require('node:os').homedir(), '.jarvis', 'daemon');
+  if (isGitRepo(installDir)) {
+    return installDir;
+  }
+
+  return null;
+}
+
+function parseVersion(v: string): number[] {
+  const cleaned = String(v).trim().replace(/^v/i, '').split(/[+-]/)[0] || '0.0.0';
+  const [major, minor, patch] = cleaned.split('.').map((p) => Number.parseInt(p, 10) || 0);
+  return [major, minor, patch];
+}
+
+function isVersionGreater(a: string, b: string): boolean {
+  const av = parseVersion(a);
+  const bv = parseVersion(b);
+  for (let i = 0; i < 3; i++) {
+    if (av[i]! > bv[i]!) return true;
+    if (av[i]! < bv[i]!) return false;
+  }
+  return false;
+}
+
+function getLatestGitHubReleaseTag(): string | null {
+  const curl = Bun.spawnSync([
+    'curl',
+    '-fsSL',
+    'https://api.github.com/repos/vierisid/jarvis/releases/latest',
+  ], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  if (curl.exitCode !== 0) {
+    return null;
+  }
+
+  try {
+    const body = JSON.parse(curl.stdout.toString());
+    const tag = String(body?.tag_name ?? '').trim();
+    return tag || null;
+  } catch {
+    return null;
+  }
+}
+
+function getGitStatusPorcelain(dir: string): string[] {
+  const result = Bun.spawnSync(['git', 'status', '--porcelain'], {
+    cwd: dir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  if (result.exitCode !== 0) {
+    return [];
+  }
+
+  return result.stdout
+    .toString()
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter(Boolean);
+}
+
+async function handleLocalChangesBeforeUpdate(sourceDir: string): Promise<boolean> {
+  const changes = getGitStatusPorcelain(sourceDir);
+  if (changes.length === 0) {
+    return true;
+  }
+
+  console.log(c.yellow('\n! Local feature/code changes detected in your installation:'));
+  const preview = changes.slice(0, 10);
+  for (const line of preview) {
+    console.log(c.dim(`  ${line}`));
+  }
+  if (changes.length > preview.length) {
+    console.log(c.dim(`  ...and ${changes.length - preview.length} more`));
+  }
+
+  if (!process.stdin.isTTY) {
+    console.log(c.red('âœ— Non-interactive shell: update cancelled to protect your local changes.'));
+    console.log(c.dim('  Re-run interactively and choose: [S]tash, [R]eplace local edits, or [D]iscard update.'));
+    return false;
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    console.log('');
+    console.log(c.bold('Choose how to proceed:'));
+    console.log(c.dim('  [S] Stash local changes, update, then keep stashed changes for later'));
+    console.log(c.dim('  [R] Replace local tracked edits with upstream (git reset --hard)'));
+    console.log(c.dim('  [D] Discard this update (keep your current local state)'));
+
+    const answer = (await rl.question('  Selection (S/R/D): ')).trim().toLowerCase();
+
+    if (answer === 'd' || answer === 'discard') {
+      console.log(c.yellow('Update cancelled. Your local features/data/history remain unchanged.'));
+      return false;
+    }
+
+    if (answer === 'r' || answer === 'replace') {
+      const reset = Bun.spawnSync(['git', 'reset', '--hard', 'HEAD'], {
+        cwd: sourceDir,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+      if (reset.exitCode !== 0) {
+        console.log(c.red('âœ— Failed to replace local edits before update:'));
+        console.log(c.dim(`  ${(reset.stderr.toString() || reset.stdout.toString()).trim()}`));
+        return false;
+      }
+      console.log(c.green('âœ“ Local tracked edits replaced. Proceeding with update...'));
+      return true;
+    }
+
+    // Default to stash for any other input including explicit 's'
+    const stashMessage = `jarvis-update-${new Date().toISOString()}`;
+    const stash = Bun.spawnSync(['git', 'stash', 'push', '-u', '-m', stashMessage], {
+      cwd: sourceDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    });
+    if (stash.exitCode !== 0) {
+      console.log(c.red('âœ— Failed to stash local changes before update:'));
+      console.log(c.dim(`  ${(stash.stderr.toString() || stash.stdout.toString()).trim()}`));
+      return false;
+    }
+    console.log(c.green('âœ“ Local changes stashed safely. Proceeding with update...'));
+    console.log(c.dim(`  Restore later with: git -C ${sourceDir} stash pop`));
+    return true;
+  } finally {
+    rl.close();
+  }
+}
+
 async function cmdUpdate(): Promise<void> {
   console.log(c.cyan('Checking for updates...\n'));
 
@@ -283,53 +438,61 @@ async function cmdUpdate(): Promise<void> {
   const currentVersion = getVersion();
   console.log(`  Current version: ${c.bold(currentVersion)}`);
 
-  // Check if daemon is running (we'll restart it after update)
+  // Check if daemon is running (restart only after successful update)
   const wasRunning = isLocked();
 
-  // Stop daemon if running
-  if (wasRunning) {
-    console.log(c.dim('  Stopping daemon before update...'));
-    try {
-      process.kill(wasRunning, 'SIGTERM');
-      releaseLock();
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } catch {
-      releaseLock();
+  // Determine update mode
+  const sourceDir = getUpdateSourceDir();
+  if (!sourceDir) {
+    const latestTag = getLatestGitHubReleaseTag();
+    const latestNormalized = latestTag ? latestTag.replace(/^v/i, '') : null;
+
+    console.log('');
+    console.log(c.yellow('! This installation is not git-managed from the current environment.'));
+    if (isContainerRuntime()) {
+      console.log(c.dim('  Detected container runtime. To update safely without touching /data:'));
+      console.log(c.dim('  1) docker pull ghcr.io/vierisid/jarvis:latest'));
+      console.log(c.dim('  2) recreate the container with the SAME /data volume and env vars'));
+      console.log(c.dim('  3) keep using your existing /data mount to preserve features/config/workflows'));
+    } else {
+      console.log(c.dim('  Re-run the installer or update your ~/.jarvis/daemon checkout, then restart JARVIS.'));
     }
+
+    if (latestNormalized) {
+      if (isVersionGreater(latestNormalized, currentVersion)) {
+        console.log(c.dim(`  Upstream latest release: v${latestNormalized}`));
+      } else {
+        console.log(c.dim(`  Installed version appears current relative to release tag v${latestNormalized}.`));
+      }
+    }
+    return;
   }
 
-  // Update via git pull + bun install (not npm — package is not published)
+  // Update via git pull + bun install in resolved source dir
+  console.log(c.dim(`  Update source: ${sourceDir}`));
+
+  const canProceed = await handleLocalChangesBeforeUpdate(sourceDir);
+  if (!canProceed) {
+    return;
+  }
+
   console.log('');
   const gitPull = Bun.spawnSync(['git', 'pull', '--ff-only'], {
-    cwd: PACKAGE_ROOT,
+    cwd: sourceDir,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
   });
 
   if (gitPull.exitCode !== 0) {
-    const stderr = gitPull.stderr.toString();
-    // If not a git repo, try the install dir
-    const installDir = join(require('node:os').homedir(), '.jarvis', 'daemon');
-    const gitPull2 = Bun.spawnSync(['git', 'pull', '--ff-only'], {
-      cwd: installDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
-    });
-
-    if (gitPull2.exitCode !== 0) {
-      console.log(c.red('✗ Update failed (git pull):'));
-      console.log(c.dim(`  ${gitPull2.stderr.toString().trim() || stderr.trim()}`));
-      if (wasRunning) {
-        console.log(c.dim('\n  Restarting daemon...'));
-        await cmdStart(['--no-open']);
-      }
-      process.exit(1);
-    }
+    console.log(c.red('âœ— Update failed (git pull):'));
+    console.log(c.dim(`  ${(gitPull.stderr.toString() || gitPull.stdout.toString()).trim()}`));
+    console.log(c.dim('  No user data was modified.'));
+    return;
   }
 
   // Reinstall dependencies
   const bunInstall = Bun.spawnSync(['bun', 'install'], {
-    cwd: PACKAGE_ROOT,
+    cwd: sourceDir,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
   });
@@ -338,16 +501,36 @@ async function cmdUpdate(): Promise<void> {
     console.log(c.yellow('! Dependencies may need manual refresh: bun install'));
   }
 
+  // Rebuild dashboard assets so updated JS/CSS chunk references stay consistent
+  const uiBuild = Bun.spawnSync(['bun', 'run', 'build:ui'], {
+    cwd: sourceDir,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+  if (uiBuild.exitCode !== 0) {
+    console.log(c.yellow('! UI build failed during update; dashboard may require manual rebuild.'));
+    console.log(c.dim('  Run: bun run build:ui'));
+  }
+
   // Get new version
   const newVersion = getVersion();
   if (newVersion === currentVersion) {
-    console.log(c.green(`✓ Already on the latest version (${currentVersion})`));
+    console.log(c.green(`âœ“ Update check complete (no version change: ${currentVersion})`));
   } else {
-    console.log(c.green(`✓ Updated: ${currentVersion} → ${newVersion}`));
+    console.log(c.green(`âœ“ Updated: ${currentVersion} â†’ ${newVersion}`));
   }
 
-  // Restart daemon if it was running
+  // Restart daemon if it was running (only after successful update)
   if (wasRunning) {
+    console.log(c.dim('\nStopping daemon to apply update...'));
+    try {
+      process.kill(wasRunning, 'SIGTERM');
+      releaseLock();
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    } catch {
+      releaseLock();
+    }
+
     console.log(c.dim('\nRestarting daemon...'));
     await cmdStart(['--no-open']);
   }
@@ -373,11 +556,11 @@ function openDashboard(port: number): void {
       Bun.spawn(['xdg-open', url], { stdio: ['ignore', 'ignore', 'ignore'] });
     }
   } catch {
-    // Silently fail — user can open manually
+    // Silently fail â€” user can open manually
   }
 }
 
-// ── Main ─────────────────────────────────────────────────────────────
+// â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const args = process.argv.slice(2);
 const command = args[0] || 'help';

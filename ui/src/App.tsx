@@ -99,6 +99,68 @@ const SETTINGS_NAV: { section: SettingsSection; label: string }[] = [
   { section: "sidecar", label: "Sidecar" },
 ];
 
+type AppErrorBoundaryState = {
+  hasError: boolean;
+  message: string;
+};
+
+class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, AppErrorBoundaryState> {
+  state: AppErrorBoundaryState = { hasError: false, message: "" };
+
+  static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
+    return { hasError: true, message: error?.message || "Unknown UI error" };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error("Dashboard render error:", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          style={{
+            height: "100vh",
+            width: "100vw",
+            display: "grid",
+            placeItems: "center",
+            background: "#07070A",
+            color: "#E5E7EB",
+            padding: "24px",
+          }}
+        >
+          <div style={{ maxWidth: 560, textAlign: "center" }}>
+            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>Dashboard temporarily unavailable</h2>
+            <p style={{ marginTop: 10, color: "#9CA3AF", fontSize: 14, lineHeight: 1.5 }}>
+              JARVIS may still be restarting after update. Reload in a few seconds to reconnect.
+            </p>
+            <p style={{ marginTop: 6, color: "#6B7280", fontSize: 12 }}>
+              {this.state.message}
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                marginTop: 16,
+                border: "1px solid rgba(255,255,255,0.14)",
+                background: "rgba(255,255,255,0.08)",
+                color: "#E5E7EB",
+                borderRadius: 10,
+                padding: "10px 14px",
+                cursor: "pointer",
+                fontWeight: 600,
+              }}
+            >
+              Reload dashboard
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 /* ================================================================
    APP
    ================================================================ */
@@ -139,7 +201,8 @@ export function App() {
   };
 
   return (
-    <div style={{ display: "flex", height: "100vh", width: "100vw", background: "#07070A" }}>
+    <AppErrorBoundary>
+      <div style={{ display: "flex", height: "100vh", width: "100vw", background: "#07070A" }}>
       {/* Sidebar — The Spine */}
       <nav className="sidebar" role="navigation" aria-label="Primary navigation">
 
@@ -256,7 +319,8 @@ export function App() {
           {route === "settings" && <SettingsPage section={settingsSection} />}
         </React.Suspense>
       </main>
-    </div>
+      </div>
+    </AppErrorBoundary>
   );
 }
 
