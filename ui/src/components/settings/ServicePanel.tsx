@@ -1,6 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api, useApiData } from "../../hooks/useApi";
-import type { UpdateInfo } from "../../types/update";
 
 type AutostartStatus = {
   platform: string;
@@ -12,9 +11,17 @@ type AutostartStatus = {
 
 export function ServicePanel() {
   const { data, loading, error, refetch } = useApiData<AutostartStatus>("/api/system/autostart", []);
-  const { data: updateData } = useApiData<UpdateInfo>("/api/system/update", []);
   const [phase, setPhase] = useState<"idle" | "restarting">("idle");
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
+    };
+  }, []);
 
   const restartService = async () => {
     setPhase("restarting");
@@ -24,13 +31,19 @@ export function ServicePanel() {
         method: "POST",
       });
       setMessage({ text: res.message, type: "success" });
-      setTimeout(() => refetch(), 2500);
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+      }
+      refreshTimerRef.current = setTimeout(async () => {
+        await refetch();
+        setPhase("idle");
+        refreshTimerRef.current = null;
+      }, 2500);
     } catch (err) {
       setMessage({
         text: err instanceof Error ? err.message : "Failed to restart service.",
         type: "error",
       });
-    } finally {
       setPhase("idle");
     }
   };
@@ -77,7 +90,6 @@ export function ServicePanel() {
       <div style={infoGridStyle}>
         <InfoRow label="Manager" value={data.manager} />
         <InfoRow label="Platform" value={data.platform} />
-        <InfoRow label="Current version" value={updateData?.current_version ?? "Loading..."} />
         <InfoRow
           label="Restart"
           value={data.restart_supported ? "Available" : data.keepalive_supported ? "Install keepalive first" : "Not supported"}

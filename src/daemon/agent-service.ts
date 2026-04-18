@@ -30,7 +30,20 @@ import { contentPipelineTool } from '../actions/tools/content.ts';
 import { commitmentsTool } from '../actions/tools/commitments.ts';
 import { researchQueueTool } from '../actions/tools/research.ts';
 import { documentTool } from '../actions/tools/documents.ts';
+import { SOVEREIGN_CONTROL_TOOLS } from '../actions/tools/sovereign-control.ts';
+import { SOVEREIGN_VISION_TOOLS } from '../actions/tools/vision.ts';
+import { emailSendTool, emailListTool, emailReadTool } from '../actions/tools/email.ts';
+import { instagramMessageTool } from '../actions/tools/social.ts';
+import { alexaControlTool } from '../actions/tools/iot.ts';
+import { gitMasteryTools, selfPatchTool } from '../actions/tools/evolution.ts';
+import { SOVEREIGN_SYSTEM_TOOLS } from '../actions/tools/system.ts';
+import { BROWSER_TOOLS } from '../actions/tools/browser-tools.ts';
+import { browserSearchDDGTool } from '../actions/tools/web-search.ts';
+import { GOOGLE_WIZARD_TOOLS } from '../actions/tools/google-wizard.ts';
+
+import { AUTOMATION_TOOLS } from './automation-tools.ts';
 import { AgentTaskManager } from '../agents/task-manager.ts';
+
 import { discoverSpecialists, formatSpecialistList } from '../agents/role-discovery.ts';
 import { buildSystemPrompt, type PromptContext } from '../roles/prompt-builder.ts';
 import type { ProgressCallback } from '../agents/sub-agent-runner.ts';
@@ -54,6 +67,7 @@ import { extractAndStore } from '../vault/extractor.ts';
 import { getKnowledgeForMessage } from '../vault/retrieval.ts';
 import { formatUserProfileForPrompt } from '../user/profile.ts';
 import { getUserProfile } from '../vault/user-profile.ts';
+import { getWebappInstructionsForMessage } from '../vault/webapp-templates.ts';
 import type { ResearchQueue } from './research-queue.ts';
 import type { IAgentService } from './agent-service-interface.ts';
 import type { AuthorityEngine } from '../authority/engine.ts';
@@ -121,6 +135,10 @@ export class AgentService implements Service, IAgentService {
     return this.taskManager;
   }
 
+  getSpecialists(): Map<string, RoleDefinition> {
+    return new Map(this.specialists);
+  }
+
   async start(): Promise<void> {
     this._status = 'starting';
 
@@ -158,8 +176,50 @@ export class AgentService implements Service, IAgentService {
 
       // Register document tool (vault-stored documents)
       toolRegistry.register(documentTool);
+      
+      // [TITAN] Register Sovereign Tools (Vision & Body)
+      for (const tool of SOVEREIGN_CONTROL_TOOLS) {
+        toolRegistry.register(tool);
+      }
+      for (const tool of SOVEREIGN_VISION_TOOLS) {
+        toolRegistry.register(tool);
+      }
+
+      // [TITAN] Register Sovereign Communication & Intelligence Tools
+      toolRegistry.register(emailSendTool);
+      toolRegistry.register(emailListTool);
+      toolRegistry.register(emailReadTool);
+      toolRegistry.register(instagramMessageTool);
+      toolRegistry.register(alexaControlTool);
+      
+      // [TITAN] Register Sovereign Evolution Tools
+      for (const tool of gitMasteryTools) {
+        toolRegistry.register(tool);
+      }
+      toolRegistry.register(selfPatchTool);
+
+      // [TITAN] Register Sovereign System Tools
+      for (const tool of SOVEREIGN_SYSTEM_TOOLS) {
+        toolRegistry.register(tool);
+      }
+
+      // [TITAN] Register Browser Intelligence & Google Wizard Tools
+      for (const tool of BROWSER_TOOLS) {
+        toolRegistry.register(tool);
+      }
+      toolRegistry.register(browserSearchDDGTool);
+      for (const tool of GOOGLE_WIZARD_TOOLS) {
+        toolRegistry.register(tool);
+      }
+
+      // [TITAN] Register Automation Tools
+      for (const tool of AUTOMATION_TOOLS) {
+        toolRegistry.register(tool);
+      }
+
 
       // Register delegate_task tool if specialists are available
+
       if (this.specialists.size > 0) {
         const delegateDeps: DelegateToolDeps = {
           orchestrator: this.orchestrator,
@@ -238,16 +298,15 @@ export class AgentService implements Service, IAgentService {
   /**
    * Stream a message through the agent. Returns a stream and an onComplete callback.
    */
-  streamMessage(text: string, channel: string = 'websocket', siteContext?: string): {
+  streamMessage(text: string, conversationId: string, channel: string = 'websocket', siteContext?: string): {
     stream: AsyncIterable<LLMStreamEvent>;
     onComplete: (fullText: string) => Promise<void>;
   } {
     let systemPrompt = this.buildFullSystemPrompt(channel, text);
     if (siteContext) {
-      systemPrompt += '\n\n' + siteContext;
-    }
+      systemPrompt += '\n\n' + siteContext;    }
 
-    const stream = this.orchestrator.streamMessage(systemPrompt, text);
+    const stream = this.orchestrator.streamMessage(systemPrompt, text, conversationId);
 
     const onComplete = async (fullText: string): Promise<void> => {
       // Note: orchestrator already adds assistant response to history
@@ -268,10 +327,10 @@ export class AgentService implements Service, IAgentService {
   /**
    * Non-streaming message handler. Returns full response string.
    */
-  async handleMessage(text: string, channel: string = 'websocket'): Promise<string> {
+  async handleMessage(text: string, conversationId: string, channel: string = 'websocket'): Promise<string> {
     const systemPrompt = this.buildFullSystemPrompt(channel, text);
 
-    const response = await this.orchestrator.processMessage(systemPrompt, text);
+    const response = await this.orchestrator.processMessage(systemPrompt, text, conversationId);
 
     // Run extraction and learning in parallel (non-blocking but tracked)
     Promise.allSettled([
@@ -379,10 +438,11 @@ export class AgentService implements Service, IAgentService {
       console.log('[AgentService] Registered OpenRouter provider');
     }
 
-    // Register Ollama (always available, no API key needed)
+    // Register Ollama
     if (llm.ollama) {
       const provider = new OllamaProvider(
         llm.ollama.base_url,
+        llm.ollama.api_key,
         llm.ollama.model
       );
       this.llmManager.registerProvider(provider);
@@ -432,7 +492,8 @@ export class AgentService implements Service, IAgentService {
         const role = loadRole(rolePath);
         console.log(`[AgentService] Loaded role '${role.name}' from ${rolePath}`);
         return role;
-      } catch {
+      } catch (err) {
+        console.error(`[AgentService] Failed to load role from ${rolePath}:`, err instanceof Error ? err.message : String(err));
         // Try next path
       }
     }
@@ -540,6 +601,16 @@ export class AgentService implements Service, IAgentService {
         }
       } catch (err) {
         console.error('[AgentService] Error retrieving knowledge:', err);
+      }
+
+      // Retrieve webapp-specific browser instructions if message mentions a known app
+      try {
+        const webappInstructions = getWebappInstructionsForMessage(userMessage);
+        if (webappInstructions) {
+          context.webappInstructions = webappInstructions;
+        }
+      } catch (err) {
+        console.error('[AgentService] Error retrieving webapp instructions:', err);
       }
     }
 

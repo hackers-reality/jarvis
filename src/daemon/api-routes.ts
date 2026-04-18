@@ -41,6 +41,12 @@ import {
   addAttachment, getAttachment, getAttachments, deleteAttachment,
   CONTENT_STAGES, CONTENT_TYPES,
 } from '../vault/content-pipeline.ts';
+import {
+  assignPersistentAgentTask,
+  listPersistentAgents,
+  spawnPersistentAgent,
+  terminatePersistentAgent,
+} from '../actions/tools/agents.ts';
 
 import { mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -99,6 +105,11 @@ import {
   getCapturesInRange,
 } from '../vault/awareness.ts';
 import type { SuggestionType } from '../awareness/types.ts';
+import {
+  getAutostartName,
+  isAutostartInstalled,
+  scheduleAutostartRestart,
+} from '../cli/autostart.ts';
 
 export type ApiContext = {
   healthMonitor: HealthMonitor;
@@ -150,6 +161,59 @@ function error(message: string, status = 400): Response {
 
 function getSearchParams(req: Request): URLSearchParams {
   return new URL(req.url).searchParams;
+}
+
+type AgentTaskSnapshot = {
+  id: string;
+  agentId: string;
+  status: string;
+  task: string;
+  startedAt: number;
+  completedAt?: number | null;
+};
+
+function buildAgentSnapshots(ctx: ApiContext) {
+  const orchestrator = ctx.agentService.getOrchestrator();
+  const taskManager = ctx.agentService.getTaskManager();
+  const latestTaskByAgent = new Map<string, AgentTaskSnapshot>();
+  const busyAgents = new Set<string>();
+
+  if (taskManager) {
+    for (const task of taskManager.listTasks()) {
+      if (!task.agentId) continue;
+      if (!task.completedAt) {
+        busyAgents.add(task.agentId);
+      }
+
+      const existing = latestTaskByAgent.get(task.agentId);
+      if (!existing || task.startedAt >= existing.startedAt) {
+        latestTaskByAgent.set(task.agentId, task);
+      }
+    }
+  }
+
+  const agents = orchestrator.getAllAgents().map((agent) => {
+    const base = agent.toJSON();
+    const latestTask = latestTaskByAgent.get(agent.id);
+    const busy = busyAgents.has(agent.id) || base.status === 'active' || Boolean(base.current_task);
+    return {
+      ...base,
+      busy,
+      latest_task: latestTask ? {
+        id: latestTask.id,
+        status: latestTask.status,
+        task: latestTask.task,
+        started_at: latestTask.startedAt,
+        completed_at: latestTask.completedAt,
+      } : null,
+    };
+  });
+
+  return {
+    agents,
+    latestTaskByAgent,
+    taskManager,
+  };
 }
 
 /**
@@ -535,9 +599,83 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
     // --- Agents ---
     '/api/agents': {
       GET: () => {
-        const orchestrator = ctx.agentService.getOrchestrator();
-        const agents = orchestrator.getAllAgents().map((a) => a.toJSON());
-        return json(agents);
+        return json(buildAgentSnapshots(ctx).agents);
+      },
+      POST: async (req: Request) => {
+        try {
+          const taskManager = ctx.agentService.getTaskManager();
+          if (!taskManager) return error('Persistent agents are not available.', 503);
+
+          const body = await req.json() as { specialist?: string; task?: string; context?: string };
+          const deps = {
+            orchestrator: ctx.agentService.getOrchestrator(),
+            llmManager: ctx.agentService.getLLMManager(),
+            specialists: ctx.agentService.getSpecialists(),
+            taskManager,
+          };
+
+          const spawned = spawnPersistentAgent(deps, body.specialist ?? '');
+          let assignment: Awaited<ReturnType<typeof assignPersistentAgentTask>> | null = null;
+
+          if (body.task?.trim()) {
+            assignment = await assignPersistentAgentTask(deps, {
+              agentId: spawned.agent.id,
+              task: body.task.trim(),
+              context: body.context?.trim(),
+            });
+          }
+
+          const latestTask = taskManager.getAgentTask(spawned.agent.id);
+          const busy = taskManager.isAgentBusy(spawned.agent.id)
+            || spawned.agent.status === 'active'
+            || Boolean(spawned.agent.agent.current_task);
+          return json({
+            ...spawned.agent.toJSON(),
+            busy,
+            latest_task: latestTask ? {
+              id: latestTask.id,
+              status: latestTask.status,
+              task: latestTask.task,
+              started_at: latestTask.startedAt,
+              completed_at: latestTask.completedAt,
+            } : null,
+            spawned: spawned.summary,
+            assignment,
+          }, 201);
+        } catch (err) {
+          return error(err instanceof Error ? err.message : String(err));
+        }
+      },
+    },
+
+    '/api/agents/specialists': {
+      GET: () => {
+        const specialists = Array.from(ctx.agentService.getSpecialists().values()).map((role) => ({
+          id: role.id,
+          name: role.name,
+          description: role.description,
+          authority_level: role.authority_level,
+          tools: role.tools,
+        }));
+        return json({ specialists });
+      },
+    },
+
+    '/api/agents/:id': {
+      DELETE: (req: Request & { params: { id: string } }) => {
+        try {
+          const taskManager = ctx.agentService.getTaskManager();
+          if (!taskManager) return error('Persistent agents are not available.', 503);
+          const deps = {
+            orchestrator: ctx.agentService.getOrchestrator(),
+            llmManager: ctx.agentService.getLLMManager(),
+            specialists: ctx.agentService.getSpecialists(),
+            taskManager,
+          };
+          return json(terminatePersistentAgent(deps, req.params.id));
+        } catch (err) {
+          return error(err instanceof Error ? err.message : String(err));
+        }
       },
     },
 
@@ -558,20 +696,21 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
     '/api/agents/tasks': {
       GET: () => {
         const tm = ctx.agentService.getTaskManager();
-        if (!tm) return json({ tasks: [] });
-        const tasks = tm.listTasks().map(t => ({
-          id: t.id,
-          agent_id: t.agentId,
-          agent_name: t.agentName,
-          specialist: t.specialistId,
-          task: t.task,
-          status: t.status,
-          started_at: t.startedAt,
-          completed_at: t.completedAt,
-          success: t.result?.success ?? null,
-          elapsed_ms: (t.completedAt ?? Date.now()) - t.startedAt,
+        if (!tm) {
+          return json({
+            active_agents: 0,
+            agents: [],
+            tasks_total: 0,
+            tasks_running: 0,
+            tasks: [],
+          });
+        }
+        return json(listPersistentAgents({
+          orchestrator: ctx.agentService.getOrchestrator(),
+          llmManager: ctx.agentService.getLLMManager(),
+          specialists: ctx.agentService.getSpecialists(),
+          taskManager: tm,
         }));
-        return json({ tasks });
       },
     },
 
@@ -635,6 +774,39 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           authority: config.authority,
           heartbeat: config.heartbeat,
           active_role: config.active_role,
+        });
+      },
+    },
+
+    '/api/system/autostart': {
+      GET: () => {
+        const installed = isAutostartInstalled();
+        const keepaliveSupported = process.platform === 'darwin' || process.platform === 'linux';
+        return json({
+          platform: process.platform,
+          manager: keepaliveSupported ? getAutostartName() : 'unsupported',
+          installed,
+          keepalive_supported: keepaliveSupported,
+          restart_supported: keepaliveSupported && installed,
+        });
+      },
+    },
+
+    '/api/system/autostart/restart': {
+      POST: () => {
+        if (!(process.platform === 'darwin' || process.platform === 'linux')) {
+          return error('24/7 restart is not supported on this platform.', 400);
+        }
+        if (!isAutostartInstalled()) {
+          return error('JARVIS keepalive mode is not installed yet.', 400);
+        }
+        const scheduled = scheduleAutostartRestart();
+        if (!scheduled) {
+          return error('Failed to schedule keepalive service restart.');
+        }
+        return json({
+          ok: true,
+          message: `Restarting the JARVIS 24/7 ${getAutostartName()} service.`,
         });
       },
     },
@@ -1031,20 +1203,29 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
     },
 
     '/api/auth/google/init': {
-      POST: async () => {
+      POST: async (req: Request) => {
         const googleConfig = ctx.config.google;
         if (!googleConfig?.client_id || !googleConfig?.client_secret) {
           return error('Google credentials not configured. Save client_id and client_secret first.', 400);
         }
 
         try {
+          const body = await req.json() as { scopes?: string[] };
           const { GoogleAuth } = await import('../integrations/google-auth.ts');
           const auth = new GoogleAuth(googleConfig.client_id, googleConfig.client_secret);
-          const scopes = [
-            'https://www.googleapis.com/auth/gmail.readonly',
-            'https://www.googleapis.com/auth/calendar.readonly',
-          ];
-          const authUrl = auth.getAuthUrl(scopes);
+          
+          // Map friendly names to URIs
+          const scopeMap: Record<string, string> = {
+            'gmail': 'https://www.googleapis.com/auth/gmail.readonly',
+            'calendar': 'https://www.googleapis.com/auth/calendar.readonly',
+            'drive': 'https://www.googleapis.com/auth/drive.readonly',
+          };
+
+          const selectedScopes = body.scopes?.length 
+            ? body.scopes.map(s => scopeMap[s] || s) 
+            : ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/calendar.readonly'];
+
+          const authUrl = auth.getAuthUrl(selectedScopes);
           return json({ auth_url: authUrl });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -1052,6 +1233,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
         }
       },
     },
+
 
     '/api/auth/google/disconnect': {
       POST: async () => {
@@ -1068,6 +1250,156 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
         }
       },
     },
+    
+    // --- Spotify Auth Management ---
+    '/api/auth/spotify/status': {
+      GET: async () => {
+        const spotifyConfig = ctx.config.spotify;
+        const hasCredentials = !!(spotifyConfig?.client_id && spotifyConfig?.client_secret);
+        
+        const { hasSecret } = await import('../vault/keychain.ts');
+        const hasRefreshToken = hasSecret('spotify.refresh_token');
+
+        return json({
+          status: (hasCredentials && hasRefreshToken) ? 'connected' : hasCredentials ? 'credentials_saved' : 'not_configured',
+          has_credentials: hasCredentials,
+          is_authenticated: hasRefreshToken,
+        });
+      },
+    },
+
+    '/api/config/spotify': {
+      POST: async (req: Request) => {
+        try {
+          const body = await req.json() as { client_id: string; client_secret: string; refresh_token?: string };
+          if (!body.client_id || !body.client_secret) {
+            return error('Missing client_id or client_secret');
+          }
+
+          const { loadConfig, saveConfig } = await import('../config/loader.ts');
+          const { setSecret } = await import('../vault/keychain.ts');
+          
+          const freshConfig = await loadConfig();
+          freshConfig.spotify = { client_id: body.client_id, client_secret: body.client_secret };
+          await saveConfig(freshConfig);
+
+          if (body.refresh_token) {
+            setSecret('spotify.refresh_token', body.refresh_token);
+          }
+
+          // Update in-memory config
+          ctx.config.spotify = freshConfig.spotify;
+
+          return json({ ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return error(`Failed to save Spotify config: ${msg}`, 500);
+        }
+      },
+    },
+
+    '/api/auth/spotify/init': {
+      POST: async () => {
+        const spotifyConfig = ctx.config.spotify;
+        if (!spotifyConfig?.client_id || !spotifyConfig?.client_secret) {
+          return error('Spotify credentials not configured.', 400);
+        }
+        try {
+          const { SpotifyClient } = await import('../integrations/spotify.ts');
+          const client = new SpotifyClient(spotifyConfig.client_id, spotifyConfig.client_secret);
+          const scopes = [
+            'user-read-playback-state',
+            'user-modify-playback-state',
+            'user-read-currently-playing',
+            'app-remote-control',
+            'streaming',
+            'playlist-read-private',
+            'playlist-read-collaborative',
+          ];
+          const authUrl = client.getAuthUrl(scopes);
+          return json({ auth_url: authUrl });
+        } catch (err) {
+          return error(`Failed to generate Spotify auth URL: ${err}`, 500);
+        }
+      },
+    },
+
+    '/api/auth/spotify/callback': {
+      GET: async (req: Request) => {
+        const params = getSearchParams(req);
+        const code = params.get('code');
+        const authError = params.get('error');
+
+        if (authError) {
+          return new Response(
+            `<html><body><h1>Authorization Denied</h1><p>${escapeHtml(authError)}</p></body></html>`,
+            { headers: { ...CORS, 'Content-Type': 'text/html' } }
+          );
+        }
+
+        if (!code) return error('Missing code', 400);
+
+        const spotifyConfig = ctx.config.spotify;
+        if (!spotifyConfig?.client_id || !spotifyConfig?.client_secret) {
+          return error('Spotify not configured', 500);
+        }
+
+        try {
+          const { SpotifyClient } = await import('../integrations/spotify.ts');
+          const { setSecret } = await import('../vault/keychain.ts');
+          const client = new SpotifyClient(spotifyConfig.client_id, spotifyConfig.client_secret);
+          const tokens = await client.exchangeCode(code);
+          
+          setSecret('spotify.refresh_token', tokens.refresh_token);
+
+          return new Response(
+            `<html><body style="background:#000;color:#fff;font-family:system-ui;text-align:center;padding:60px">
+              <h1 style="color:#1DB954">Spotify Authorized!</h1>
+              <p>Tokens saved. You can close this window.</p>
+              <script>
+                if (window.opener) { window.opener.postMessage('spotify-auth-complete', window.location.origin); }
+                setTimeout(function() { window.close(); }, 2000);
+              </script>
+            </body></html>`,
+            { headers: { ...CORS, 'Content-Type': 'text/html' } }
+          );
+        } catch (err) {
+          return error(`Token exchange failed: ${err}`, 500);
+        }
+      },
+    },
+
+    '/api/auth/spotify/manual': {
+      POST: async (req: Request) => {
+        try {
+          const body = await req.json() as { codeOrUrl: string };
+          let code = body.codeOrUrl;
+
+          // If the user pasted the whole URL, extract the code
+          if (code.includes('code=')) {
+            const tempUrl = new URL(code.includes('://') ? code : `http://localhost?${code}`);
+            code = tempUrl.searchParams.get('code') || code;
+          }
+
+          const spotifyConfig = ctx.config.spotify;
+          if (!spotifyConfig?.client_id || !spotifyConfig?.client_secret) {
+            return error('Spotify not configured', 500);
+          }
+
+          const { SpotifyClient } = await import('../integrations/spotify.ts');
+          const { setSecret } = await import('../vault/keychain.ts');
+          const client = new SpotifyClient(spotifyConfig.client_id, spotifyConfig.client_secret);
+          const tokens = await client.exchangeCode(code);
+          
+          setSecret('spotify.refresh_token', tokens.refresh_token);
+
+          return json({ ok: true, message: 'Spotify authorized via manual code entry.' });
+        } catch (err) {
+          return error(`Manual auth failed: ${err}`, 500);
+        }
+      },
+    },
+
 
     // --- Channels ---
     '/api/channels/status': {
@@ -1123,6 +1455,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
 
           return json({ ok: true, message: 'Channel config saved. Restart JARVIS to apply changes.' });
         } catch (err) {
+          console.error('[API] Error saving channels config:', err);
           return error('Invalid request body');
         }
       },
@@ -1135,6 +1468,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           provider: stt?.provider ?? 'openai',
           has_openai_key: !!stt?.openai?.api_key,
           has_groq_key: !!stt?.groq?.api_key,
+          has_sarvam_key: !!stt?.sarvam?.api_key,
           local_endpoint: stt?.local?.endpoint ?? null,
           local_server_type: stt?.local?.server_type ?? 'whisper_cpp',
         });
@@ -1144,11 +1478,43 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           const body = await req.json() as Record<string, unknown>;
           const { loadConfig, saveConfig } = await import('../config/loader.ts');
           const freshConfig = await loadConfig();
-          freshConfig.stt = { ...freshConfig.stt, ...body } as any;
+
+          if (!freshConfig.stt) freshConfig.stt = {} as any;
+          const stt = freshConfig.stt!;
+
+          // Preserve keys for each provider if not provided in the update
+          const providers = ['openai', 'groq', 'sarvam'] as const;
+          for (const p of providers) {
+            const incoming = body[p] as Record<string, unknown> | undefined;
+            const existing = stt[p];
+            if (incoming) {
+              stt[p] = {
+                ...existing,
+                ...incoming,
+                api_key: (incoming.api_key as string) || (existing as any)?.api_key || '',
+              } as any;
+              delete body[p];
+            }
+          }
+
+          freshConfig.stt = { ...stt, ...body } as any;
           await saveConfig(freshConfig);
           ctx.config.stt = freshConfig.stt;
-          return json({ ok: true, message: 'STT config saved. Restart JARVIS to apply changes.' });
+
+          // Hot-swap the STT provider in the active service
+          try {
+            const { createSTTProvider } = await import('../comms/voice.ts');
+            const newProvider = createSTTProvider(ctx.config.stt);
+            if (newProvider) {
+              ctx.wsService?.setSTTProvider(newProvider);
+            }
+          } catch (err) {
+            console.error('[API] Failed to hot-swap STT provider:', err);
+          }
+
+          return json({ ok: true, message: 'STT config saved and applied immediately.' });
         } catch (err) {
+          console.error('[API] Error saving STT config:', err);
           return error('Invalid request body');
         }
       },
@@ -1170,6 +1536,13 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
             stability: tts.elevenlabs.stability ?? 0.5,
             similarity_boost: tts.elevenlabs.similarity_boost ?? 0.75,
           } : null,
+          sarvam: tts?.sarvam ? {
+            has_api_key: !!tts.sarvam.api_key,
+            model: tts.sarvam.model ?? 'bulbul:v3',
+            language: tts.sarvam.language ?? 'en-IN',
+            speaker: tts.sarvam.speaker ?? 'anushka',
+            sampling_rate: tts.sarvam.sampling_rate ?? 48000,
+          } : null,
         });
       },
       POST: async (req: Request) => {
@@ -1177,6 +1550,8 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           const body = await req.json() as Record<string, unknown>;
           const { loadConfig, saveConfig } = await import('../config/loader.ts');
           const freshConfig = await loadConfig();
+
+          if (!freshConfig.tts) freshConfig.tts = {} as any;
 
           // Deep-merge elevenlabs sub-object to preserve API key across saves
           const incomingEl = body.elevenlabs as Record<string, unknown> | undefined;
@@ -1194,20 +1569,38 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
             } as any;
           }
 
+          const incomingSarvam = body.sarvam as Record<string, unknown> | undefined;
+          const existingSarvam = freshConfig.tts?.sarvam;
+          delete body.sarvam;
+
+          if (incomingSarvam) {
+            freshConfig.tts!.sarvam = {
+              ...existingSarvam,
+              ...incomingSarvam,
+              // Keep existing API key if new one not provided
+              api_key: (incomingSarvam.api_key as string) || existingSarvam?.api_key || '',
+            } as any;
+          }
+
           await saveConfig(freshConfig);
           ctx.config.tts = freshConfig.tts;
 
-          // Hot-reload TTS provider if wsService available
-          if (ctx.wsService && freshConfig.tts) {
+          // Hot-swap the TTS provider in the active service
+          try {
             const { createTTSProvider } = await import('../comms/voice.ts');
-            const provider = createTTSProvider(freshConfig.tts);
-            if (provider) {
-              ctx.wsService.setTTSProvider(provider);
+            const newProvider = createTTSProvider(ctx.config.tts);
+            if (newProvider) {
+              ctx.wsService?.setTTSProvider(newProvider);
             }
+          } catch (err) {
+            console.error('[API] Failed to hot-swap TTS provider:', err);
           }
+
+          return json({ ok: true, message: 'TTS config saved and applied immediately.' });
 
           return json({ ok: true, message: 'TTS config saved.' });
         } catch (err) {
+          console.error('[API] Error saving TTS config:', err);
           return error('Invalid request body');
         }
       },
@@ -1464,9 +1857,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           if (!body.action) return error('Missing "action" field');
           ctx.learner.resetPattern(body.action, body.tool_name ?? '');
           return json({ ok: true });
-        } catch (err) {
-          return error('Invalid request body');
-        }
+        } catch (err) { return error('Invalid request body'); }
       },
     },
 
@@ -1478,6 +1869,7 @@ export function createApiRoutes(ctx: ApiContext): Record<string, unknown> {
           status: ctx.awarenessService.status(),
           enabled: ctx.awarenessService.isEnabled(),
           liveContext: ctx.awarenessService.getLiveContext(),
+          usageEstimate: ctx.awarenessService.getUsageEstimate(),
         });
       },
     },

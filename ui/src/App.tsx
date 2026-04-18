@@ -23,9 +23,9 @@ const SitesPage = React.lazy(() => import("./pages/SitesPage"));
 
 type Route = "dashboard" | "chat" | "tasks" | "pipeline" | "memory" | "calendar" | "office" | "knowledge" | "command" | "authority" | "awareness" | "workflows" | "goals" | "sites" | "settings";
 
-export type SettingsSection = "general" | "profile" | "llm" | "channels" | "integrations" | "sidecar" | "update";
+export type SettingsSection = "general" | "profile" | "llm" | "channels" | "integrations" | "sidecar";
 
-const SETTINGS_SECTIONS: SettingsSection[] = ["general", "profile", "llm", "channels", "integrations", "sidecar", "update"];
+const SETTINGS_SECTIONS: SettingsSection[] = ["general", "profile", "llm", "channels", "integrations", "sidecar"];
 
 function getRoute(): Route {
   const hash = window.location.hash.replace("#/", "");
@@ -97,7 +97,6 @@ const SETTINGS_NAV: { section: SettingsSection; label: string }[] = [
   { section: "channels", label: "Channels" },
   { section: "integrations", label: "Integrations" },
   { section: "sidecar", label: "Sidecar" },
-  { section: "update", label: "Update" },
 ];
 
 /* ================================================================
@@ -239,9 +238,50 @@ export function App() {
 
       {/* Main Content */}
       <main style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {ws.notices.length > 0 ? (
+          <div style={{ padding: "14px 18px 0" }}>
+            {ws.notices.map((notice) => (
+              <div
+                key={notice.id}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "12px",
+                  padding: "12px 14px",
+                  marginBottom: "10px",
+                  borderRadius: "12px",
+                  border: "1px solid rgba(251, 191, 36, 0.35)",
+                  background: "rgba(251, 191, 36, 0.12)",
+                  color: "#FDE68A",
+                }}
+              >
+                <div style={{ fontSize: "18px", lineHeight: 1 }}>⚠</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "13px", fontWeight: 700 }}>{notice.title}</div>
+                  <div style={{ fontSize: "13px", color: "rgba(255,255,255,0.82)", marginTop: "2px" }}>{notice.text}</div>
+                </div>
+                <button
+                  onClick={() => ws.dismissNotice(notice.id)}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    color: "rgba(255,255,255,0.72)",
+                    cursor: "pointer",
+                    fontSize: "18px",
+                    lineHeight: 1,
+                  }}
+                  aria-label="Dismiss notice"
+                  title="Dismiss notice"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <React.Suspense fallback={<PageFallback />}>
           {route === "dashboard" && <DashboardPage messages={ws.messages} isConnected={ws.isConnected} voice={voice} agentActivity={ws.agentActivity} goalEvents={ws.goalEvents} workflowEvents={ws.workflowEvents} />}
-          {route === "chat" && <ChatPage messages={ws.messages} isConnected={ws.isConnected} sendMessage={ws.sendMessage} voice={voice} />}
+          {route === "chat" && <ChatPage messages={ws.messages} isConnected={ws.isConnected} sendMessage={ws.sendMessage} voice={voice} isProcessing={ws.isProcessing} />}
           {route === "tasks" && <TasksPage taskEvents={ws.taskEvents} />}
           {route === "pipeline" && <PipelinePage contentEvents={ws.contentEvents} sendMessage={ws.sendMessage} />}
           {route === "memory" && <MemoryPage />}

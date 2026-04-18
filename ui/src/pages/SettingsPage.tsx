@@ -9,7 +9,7 @@ import { ChannelsPanel } from "../components/settings/ChannelsPanel";
 import { SidecarPanel } from "../components/settings/SidecarPanel";
 import { UserProfilePanel } from "../components/settings/UserProfilePanel";
 import { ServicePanel } from "../components/settings/ServicePanel";
-import { UpdatePanel } from "../components/settings/UpdatePanel";
+import { SpotifyPanel } from "../components/settings/SpotifyPanel";
 
 const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }> = {
   general: { title: "General", subtitle: "Personality, role, and heartbeat configuration" },
@@ -18,7 +18,6 @@ const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }>
   channels: { title: "Communication Channels", subtitle: "Telegram, Discord, voice transcription, and text-to-speech" },
   integrations: { title: "Integrations", subtitle: "Third-party service connections" },
   sidecar: { title: "Sidecar", subtitle: "Remote machine control via Go sidecar agents" },
-  update: { title: "Update", subtitle: "Check GitHub releases and install the latest JARVIS build" },
 };
 
 export default function SettingsPage({ section }: { section: SettingsSection }) {
@@ -56,9 +55,14 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           {section === "profile" && <UserProfilePanel />}
           {section === "llm" && <LLMPanel />}
           {section === "channels" && <ChannelsPanel />}
-          {section === "integrations" && <IntegrationsPanel />}
+          {section === "integrations" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+              <IntegrationsPanel />
+              <SpotifyPanel />
+            </div>
+          )}
+
           {section === "sidecar" && <SidecarPanel />}
-          {section === "update" && <UpdatePanel />}
         </div>
       </div>
     </div>

@@ -266,7 +266,7 @@ Bank account monitoring, expense tracking, investment portfolio management, and 
   - Always blocked: transactions above hard cap (default $500) require manual execution
   - All thresholds configurable per user
 - **Investment portfolio tracking**: connect brokerage accounts (Alpaca, Coinbase, Interactive Brokers). Real-time prices, P&L, portfolio allocation. Alerts on significant movements
-- **Trading execution**: execute trades via broker APIs (Alpaca for stocks, Coinbase for crypto). Authority-gated — all trades require explicit approval unless user configures auto-approve rules for specific strategies
+- **Stateful Persistence**: maintain complex agent state across daemon restarts using the Sisyphus Protocol and SQLite checkpointing.
 - **Financial dashboard**: account balances, spending charts, budget vs actual, portfolio performance, upcoming bills, transaction history with search/filter
 - **Separate encrypted database**: all financial data stored in a dedicated encrypted SQLite file (`~/.jarvis/finance.db`), separate from the vault. Encrypted at rest with a user-provided passphrase. Never mixed with general knowledge
 

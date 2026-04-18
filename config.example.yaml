@@ -23,22 +23,22 @@ llm:
 
   # Anthropic (Claude) configuration
   anthropic:
-    api_key: "sk-ant-..."
+    api_key: "key-ant-..."
     model: "claude-sonnet-4-5-20250929"
 
   # OpenAI (GPT) configuration
   openai:
-    api_key: "sk-..."
+    api_key: "key-..."
     model: "gpt-4o"
 
   # Groq (OpenAI-compatible) configuration
   # groq:
-  #   api_key: "gsk_..."
+  #   api_key: "key-groq-..."
   #   model: "llama-3.3-70b-versatile"
 
   # OpenRouter (access hundreds of models via single API key)
   # openrouter:
-  #   api_key: "sk-or-..."
+  #   api_key: "key-or-..."
   #   model: "anthropic/claude-sonnet-4"
 
   # Ollama (local models) configuration

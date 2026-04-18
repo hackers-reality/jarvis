@@ -7,16 +7,18 @@
  *   jarvis stop                             Stop the running daemon
  *   jarvis status                           Show daemon status
  *   jarvis onboard                          Interactive setup wizard
+ *   jarvis uninstall                        Remove JARVIS from this machine
  *   jarvis doctor                           Check environment & connectivity
  *   jarvis version                          Print version
  *   jarvis help                             Show this help
  */
 
 import { join } from 'node:path';
-import { readFileSync, existsSync, openSync } from 'node:fs';
+import { readFileSync, openSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { acquireLock, releaseLock, isLocked, getLogPath } from '../src/daemon/pid.ts';
 import { c } from '../src/cli/helpers.ts';
+import { ensurePortReleased, getConfiguredPort } from '../src/cli/lifecycle.ts';
 
 const PACKAGE_ROOT = join(import.meta.dir, '..');
 
@@ -45,6 +47,7 @@ ${c.bold('Commands:')}
   ${c.cyan('logs')}      Tail the daemon log file
   ${c.cyan('update')}    Update JARVIS to the latest version
   ${c.cyan('onboard')}   Interactive first-time setup wizard
+  ${c.cyan('uninstall')} Remove JARVIS and local data from this machine
   ${c.cyan('doctor')}    Check environment and connectivity
   ${c.cyan('version')}   Print version number
   ${c.cyan('help')}      Show this help message
@@ -53,6 +56,8 @@ ${c.bold('Start options:')}
   --port <N>        Override daemon port (default: 3142)
   -d, --detach      Run as background daemon
   --no-open         Don't auto-open dashboard in browser
+  --data-dir <path> Override data directory (default: ~/.jarvis)
+  --no-local-tools  Disable local tool execution (Docker/headless mode)
 
 ${c.bold('Logs options:')}
   -f, --follow      Follow log output (like tail -f)
@@ -66,13 +71,23 @@ ${c.bold('Examples:')}
   jarvis logs -f                Follow live log output
   jarvis update                 Update to latest version
   jarvis onboard                Run the setup wizard
+  jarvis uninstall              Remove JARVIS from this machine
   jarvis doctor                 Check if everything is working
 `);
+}
+
+function assertSupportedPlatform(): void {
+  if (process.platform !== 'win32') return;
+  console.error(c.red('Native Windows installs are not supported for the JARVIS daemon.'));
+  console.error(c.dim('Use WSL2 for the Bun install, or run JARVIS with Docker on Windows.'));
+  console.error(c.dim('The Windows sidecar is still supported separately.'));
+  process.exit(1);
 }
 
 async function cmdStart(args: string[]): Promise<void> {
   const detach = args.includes('--detach') || args.includes('-d');
   const noOpen = args.includes('--no-open');
+  const noLocalTools = args.includes('--no-local-tools');
 
   // Parse --port
   let port: number | undefined;
@@ -83,6 +98,13 @@ async function cmdStart(args: string[]): Promise<void> {
       console.error(c.red('Error: --port requires a number between 1 and 65535'));
       process.exit(1);
     }
+  }
+
+  // Parse --data-dir
+  let dataDir: string | undefined;
+  const dataDirIdx = args.indexOf('--data-dir');
+  if (dataDirIdx !== -1 && args[dataDirIdx + 1]) {
+    dataDir = args[dataDirIdx + 1]!;
   }
 
   if (!detach) {
@@ -97,7 +119,7 @@ async function cmdStart(args: string[]): Promise<void> {
     process.on('SIGTERM', () => { releaseLock(); process.exit(0); });
 
     const { startDaemon } = await import('../src/daemon/index.ts');
-    await startDaemon({ port, ...(port ? {} : {}) });
+    await startDaemon({ port, dataDir, noLocalTools });
 
     if (!noOpen) {
       openDashboard(port ?? 3142);
@@ -155,8 +177,17 @@ async function cmdStart(args: string[]): Promise<void> {
 
 async function cmdStop(): Promise<void> {
   const pid = isLocked();
+  const port = getConfiguredPort();
   if (!pid) {
-    console.log(c.yellow('JARVIS is not running.'));
+    const cleanup = await ensurePortReleased(port);
+    if (cleanup.terminated.length > 0 || cleanup.forced.length > 0) {
+      const details = cleanup.forced.length > 0
+        ? ` Force-killed lingering listener(s) on port ${port}: ${cleanup.forced.join(', ')}.`
+        : ` Cleaned up lingering listener(s) on port ${port}: ${cleanup.terminated.join(', ')}.`;
+      console.log(c.green(`✓ JARVIS was not locked, but the port is now clear.${details}`));
+    } else {
+      console.log(c.yellow('JARVIS is not running.'));
+    }
     return;
   }
 
@@ -176,8 +207,19 @@ async function cmdStop(): Promise<void> {
       try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     }
 
+    const cleanup = await ensurePortReleased(port);
     releaseLock();
-    console.log(c.green('✓ JARVIS daemon stopped.'));
+    if (!cleanup.released) {
+      console.error(c.red(`✗ JARVIS stopped but port ${port} is still occupied.`));
+      process.exit(1);
+    }
+
+    const details = cleanup.forced.length > 0
+      ? ` Force-killed lingering listener(s) on port ${port}: ${cleanup.forced.join(', ')}.`
+      : cleanup.terminated.length > 0
+        ? ` Cleaned up lingering listener(s) on port ${port}: ${cleanup.terminated.join(', ')}.`
+        : '';
+    console.log(c.green(`✓ JARVIS daemon stopped.${details}`));
   } catch (err) {
     console.error(c.red(`Failed to stop process ${pid}: ${err}`));
     releaseLock();
@@ -191,12 +233,7 @@ function cmdStatus(): void {
 
     // Try to read the port from config
     try {
-      const { homedir } = require('node:os');
-      const configPath = join(homedir(), '.jarvis', 'config.yaml');
-      const YAML = require('yaml');
-      const text = readFileSync(configPath, 'utf-8');
-      const cfg = YAML.parse(text);
-      const port = cfg?.daemon?.port ?? 3142;
+      const port = getConfiguredPort();
       console.log(c.dim(`  Dashboard: http://localhost:${port}`));
     } catch {
       console.log(c.dim(`  Dashboard: http://localhost:3142`));
@@ -211,12 +248,21 @@ function cmdStatus(): void {
 
 async function cmdOnboard(): Promise<void> {
   const { runOnboard } = await import('../src/cli/onboard.ts');
+  const { runDoctor } = await import('../src/cli/doctor.ts');
   await runOnboard();
+  console.log('');
+  console.log(c.cyan('Running JARVIS doctor...'));
+  await runDoctor();
 }
 
 async function cmdDoctor(): Promise<void> {
   const { runDoctor } = await import('../src/cli/doctor.ts');
   await runDoctor();
+}
+
+async function cmdUninstall(): Promise<void> {
+  const { runUninstallWizard } = await import('../src/cli/uninstall.ts');
+  await runUninstallWizard(PACKAGE_ROOT);
 }
 
 async function cmdRestart(args: string[]): Promise<void> {
@@ -369,6 +415,8 @@ function openDashboard(port: number): void {
 
 // ── Main ─────────────────────────────────────────────────────────────
 
+assertSupportedPlatform();
+
 const args = process.argv.slice(2);
 const command = args[0] || 'help';
 const commandArgs = args.slice(1);
@@ -399,6 +447,10 @@ switch (command) {
     break;
   case 'doctor':
     await cmdDoctor();
+    break;
+  case 'uninstall':
+  case 'remove':
+    await cmdUninstall();
     break;
   case 'version':
   case '-v':

@@ -1,6 +1,7 @@
 import YAML from 'yaml';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import type { JarvisConfig } from './types.ts';
 import { DEFAULT_CONFIG } from './types.ts';
 
@@ -115,10 +116,14 @@ export async function loadConfig(configPath?: string): Promise<JarvisConfig> {
 
   // File exists — parse errors should be fatal
   const text = await file.text();
-  const parsed = YAML.parse(text);  // throws YAMLParseError on bad syntax
+  const doc = YAML.parseDocument(text, { merge: true });
+  if (doc.errors.length > 0) {
+    throw new Error(doc.errors.map((entry) => entry.message).join('\n'));
+  }
+  const parsed = (doc.toJS() ?? {}) as Partial<JarvisConfig>;
 
   // Deep merge with defaults to ensure all required fields exist
-  const config = deepMerge(DEFAULT_CONFIG, parsed) as JarvisConfig;
+  const config = deepMerge(structuredClone(DEFAULT_CONFIG), parsed) as JarvisConfig;
 
   // Expand tilde in paths
   config.daemon.data_dir = expandTilde(config.daemon.data_dir);
@@ -140,10 +145,14 @@ export async function saveConfig(
     : defaultPath);
 
   try {
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    
     const yaml = YAML.stringify(config, {
       indent: 2,
       lineWidth: 100,
-      defaultStringType: 'QUOTE_DOUBLE',
+      defaultStringType: 'PLAIN',
+      defaultKeyType: 'PLAIN',
     });
 
     await Bun.write(path, yaml);

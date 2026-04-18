@@ -647,9 +647,20 @@ function createTables(db: Database): void {
   db.run(`CREATE INDEX IF NOT EXISTS idx_sidecars_name ON sidecars(name)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_sidecars_token_id ON sidecars(token_id)`);
 
-  // Settings table: key-value store for dashboard-managed configuration
-  db.run(`
-    CREATE TABLE IF NOT EXISTS settings (
+  // Agent Checkpoints (Stateful persistence for LangGraph-style continuity)
+  db.run(`CREATE TABLE IF NOT EXISTS agent_checkpoints (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    parent_checkpoint_id TEXT,
+    state_json TEXT NOT NULL,
+    metadata_json TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+  )`);
+
+  // Ensure settings exists
+  db.run(`CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -671,4 +682,29 @@ function createTables(db: Database): void {
   `);
   db.run(`CREATE INDEX IF NOT EXISTS idx_documents_format ON documents(format)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_documents_updated ON documents(updated_at)`);
+
+  // Webapp templates: per-app browser navigation instructions
+  db.run(`
+    CREATE TABLE IF NOT EXISTS webapp_templates (
+      id TEXT PRIMARY KEY,
+      app_name TEXT NOT NULL UNIQUE,
+      domains TEXT NOT NULL,
+      keywords TEXT NOT NULL DEFAULT '[]',
+      description TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      CHECK(enabled IN (0, 1))
+    )
+  `);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_webapp_app_name ON webapp_templates(app_name)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_webapp_enabled ON webapp_templates(enabled)`);
+
+  // Migration: add keywords column to webapp_templates for DBs created before it existed
+  const webappCols = db.prepare("PRAGMA table_info(webapp_templates)").all() as { name: string }[];
+  if (!webappCols.some((c) => c.name === 'keywords')) {
+    db.run(`ALTER TABLE webapp_templates ADD COLUMN keywords TEXT NOT NULL DEFAULT '[]'`);
+  }
 }

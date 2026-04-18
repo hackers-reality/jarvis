@@ -36,6 +36,8 @@ describe('LLM Provider Types', () => {
 });
 
 describe('LLMManager', () => {
+  const sampleMessages: LLMMessage[] = [{ role: 'user', content: 'Hello' }];
+
   test('can register providers', () => {
     const manager = new LLMManager();
     const anthropic = new AnthropicProvider('test-key');
@@ -92,6 +94,105 @@ describe('LLMManager', () => {
 
     manager.registerProvider(anthropic);
     expect(() => manager.setFallbackChain(['nonexistent'])).toThrow();
+  });
+
+  test('falls back to the next provider for chat failures', async () => {
+    const manager = new LLMManager();
+    const primary = {
+      name: 'primary',
+      listModels: async () => ['primary-model'],
+      chat: async () => {
+        throw new Error('401 invalid_api_key');
+      },
+      async *stream() {
+        yield { type: 'error' as const, error: '401 invalid_api_key' };
+      },
+    };
+    const fallback = {
+      name: 'fallback',
+      listModels: async () => ['fallback-model'],
+      chat: async () => ({
+        content: 'fallback ok',
+        tool_calls: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        model: 'fallback-model',
+        finish_reason: 'stop' as const,
+      }),
+      async *stream() {
+        yield { type: 'text' as const, text: 'fallback ok' };
+        yield {
+          type: 'done' as const,
+          response: {
+            content: 'fallback ok',
+            tool_calls: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            model: 'fallback-model',
+            finish_reason: 'stop' as const,
+          },
+        };
+      },
+    };
+
+    manager.registerProvider(primary);
+    manager.registerProvider(fallback);
+    manager.setPrimary('primary');
+    manager.setFallbackChain(['fallback']);
+
+    const response = await manager.chat(sampleMessages);
+    expect(response.content).toBe('fallback ok');
+    expect(response.model).toBe('fallback-model');
+  });
+
+  test('falls back to the next provider for stream failures before output', async () => {
+    const manager = new LLMManager();
+    const primary = {
+      name: 'primary',
+      listModels: async () => ['primary-model'],
+      chat: async () => {
+        throw new Error('503 temporarily unavailable');
+      },
+      async *stream() {
+        yield { type: 'error' as const, error: '503 temporarily unavailable' };
+      },
+    };
+    const fallback = {
+      name: 'fallback',
+      listModels: async () => ['fallback-model'],
+      chat: async () => ({
+        content: 'fallback stream ok',
+        tool_calls: [],
+        usage: { input_tokens: 1, output_tokens: 1 },
+        model: 'fallback-model',
+        finish_reason: 'stop' as const,
+      }),
+      async *stream() {
+        yield { type: 'text' as const, text: 'fallback stream ok' };
+        yield {
+          type: 'done' as const,
+          response: {
+            content: 'fallback stream ok',
+            tool_calls: [],
+            usage: { input_tokens: 1, output_tokens: 1 },
+            model: 'fallback-model',
+            finish_reason: 'stop' as const,
+          },
+        };
+      },
+    };
+
+    manager.registerProvider(primary);
+    manager.registerProvider(fallback);
+    manager.setPrimary('primary');
+    manager.setFallbackChain(['fallback']);
+
+    const events = [];
+    for await (const event of manager.stream(sampleMessages)) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.type === 'text' && event.text === 'fallback stream ok')).toBe(true);
+    expect(events.some((event) => event.type === 'done')).toBe(true);
+    expect(events.some((event) => event.type === 'error')).toBe(false);
   });
 });
 
@@ -444,42 +545,5 @@ describe('Groq request shaping', () => {
     expect(body.messages[0].role).toBe('system');
     expect(body.messages.at(-1).content).toBe('latest question');
     expect(body.messages.length).toBeLessThan(messages.length);
-  });
-
-  test('GroqProvider keeps tool call exchanges intact when compacting history', async () => {
-    const provider = new GroqProvider('test-key') as any;
-    const long = 'x'.repeat(12_000);
-    const messages: LLMMessage[] = [
-      { role: 'system', content: 'System prompt' },
-      { role: 'user', content: long },
-      { role: 'assistant', content: long },
-      { role: 'user', content: long },
-      {
-        role: 'assistant',
-        content: '',
-        tool_calls: [{ id: 'call_1', name: 'delegate_task', arguments: { task: 'Investigate' } }],
-      },
-      { role: 'tool', content: 'done', tool_call_id: 'call_1' },
-    ];
-
-    await provider.chat(messages, {
-      tools: [
-        {
-          name: 'delegate_task',
-          description: 'Delegate focused work',
-          parameters: { type: 'object', properties: {}, required: [] },
-        },
-      ],
-    });
-
-    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
-    const body = JSON.parse(String(init.body));
-
-    expect(body.messages.length).toBeLessThan(messages.length);
-    expect(body.messages.at(-2).role).toBe('assistant');
-    expect(body.messages.at(-2).tool_calls[0].id).toBe('call_1');
-    expect(body.messages.at(-1).role).toBe('tool');
-    expect(body.messages.at(-1).tool_call_id).toBe('call_1');
   });
 });

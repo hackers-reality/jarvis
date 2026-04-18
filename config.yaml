@@ -1,0 +1,128 @@
+user:
+  name: Arnav Phulari
+daemon:
+  port: 3142
+  data_dir: /data
+  db_path: /data/jarvis.db
+channels:
+  telegram:
+    enabled: false
+    bot_token: ""
+    allowed_users: []
+  discord:
+    enabled: true
+    bot_token: "YOUR_DISCORD_BOT_TOKEN"
+    allowed_users:
+      - "832957921419329536"
+stt:
+  provider: sarvam
+  sarvam:
+    api_key: "YOUR_SARVAM_API_KEY"
+  groq:
+    api_key: "YOUR_GROQ_API_KEY"
+  openai:
+    api_key: "YOUR_OPENAI_API_KEY"
+tts:
+  enabled: true
+  provider: sarvam
+  voice: en-US-AriaNeural
+  rate: +0%
+  volume: +0%
+  sarvam:
+    api_key: "YOUR_SARVAM_API_KEY"
+    model: bulbul:v3
+    language: en-IN
+    speaker: priya
+    sampling_rate: 48000
+  edge:
+    voice: en-US-GuyNeural
+    rate: +0%
+    volume: +0%
+desktop:
+  enabled: true
+  sidecar_port: 9224
+  auto_launch: true
+  tree_depth: 5
+  snapshot_max_elements: 60
+awareness:
+  enabled: true
+  capture_interval_ms: 7000
+  min_change_threshold: 0.02
+  cloud_vision_enabled: true
+  cloud_vision_cooldown_ms: 30000
+  stuck_threshold_ms: 120000
+  struggle_grace_ms: 45000
+  struggle_cooldown_ms: 90000
+  suggestion_rate_limit_ms: 60000
+  overlay_autolaunch: true
+  retention:
+    full_hours: 1
+    key_moment_hours: 24
+  capture_dir: ~/.jarvis/captures
+llm:
+  primary: ollama
+  fallback:
+    - openrouter
+    - groq
+  anthropic:
+    api_key: sk-ant-your-key
+    model: claude-sonnet-4-6
+  openai:
+    api_key: ""
+    model: gpt-5.4
+  groq:
+    api_key: "YOUR_GROQ_API_KEY"
+    model: llama-3.3-70b-versatile
+    api_keys:
+      - "YOUR_GROQ_API_KEY_1"
+      - "YOUR_GROQ_API_KEY_2"
+      - "YOUR_GROQ_API_KEY_3"
+      - "YOUR_GROQ_API_KEY_4"
+  gemini:
+    api_key: ""
+    model: gemini-3-flash-preview
+  ollama:
+    base_url: http://ollama:11434
+    model: qwen2.5:3b
+    token: "YOUR_OLLAMA_TOKEN"
+  openrouter:
+    api_key: "YOUR_OPENROUTER_API_KEY"
+    model: nvidia/nemotron-3-super-120b-a12b:free
+personality:
+  core_traits:
+    - conversational
+    - expressive
+    - proactive
+    - sarcastic
+    - Witty
+    - adaptive
+  assistant_name: Jarvis
+sites:
+  enabled: true
+  projects_dir: ~/.jarvis/projects
+  port_range_start: 4000
+  port_range_end: 4999
+  auto_commit: true
+  max_concurrent_servers: 3
+authority:
+  default_level: 5
+  governed_categories:
+    - send_email
+    - send_message
+    - make_payment
+  overrides: []
+  context_rules: []
+  learning:
+    enabled: true
+    suggest_threshold: 5
+  emergency_state: normal
+heartbeat:
+  interval_minutes: 15
+  active_hours:
+    start: 8
+    end: 23
+  aggressiveness: aggressive
+active_role: personal-assistant
+google:
+  client_id: "YOUR_GOOGLE_CLIENT_ID"
+  client_secret: "YOUR_GOOGLE_CLIENT_SECRET"

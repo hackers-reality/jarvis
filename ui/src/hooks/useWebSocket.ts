@@ -112,10 +112,100 @@ export type SiteEvent = {
   timestamp: number;
 };
 
-export type ChatSendOptions = {
-  projectId?: string;
-  fastMode?: boolean;
+export type SystemNotice = {
+  id: string;
+  title: string;
+  text: string;
+  level: "warning";
 };
+
+type SidecarEventPayload = {
+  source?: string;
+  event?: {
+    type?: string;
+    reason?: string;
+  };
+};
+
+function createSidecarNotice(payload: SidecarEventPayload, timestamp?: number): ChatMessage & { notice?: SystemNotice } {
+  const reason = payload.event?.reason?.trim();
+  const notice: SystemNotice = {
+    id: crypto.randomUUID(),
+    title: "Sidecar offline",
+    text: reason
+      ? `Jarvis sidecar disconnected: ${reason}. Dashboard features may be delayed until it reconnects.`
+      : "Jarvis sidecar disconnected. Dashboard features may be delayed until it reconnects.",
+    level: "warning",
+  };
+
+  return {
+    id: crypto.randomUUID(),
+    role: "system",
+    content: notice.text,
+    timestamp: timestamp ?? Date.now(),
+    source: "system_notification",
+    notice,
+  };
+}
+
+function extractNestedMessage(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+  if (typeof record.error === "string" && record.error.trim()) return record.error.trim();
+  if (record.error && typeof record.error === "object") {
+    return extractNestedMessage(record.error);
+  }
+  return null;
+}
+
+function formatProviderErrorMessage(raw: string | undefined): string {
+  const fallback = "Couldn't reach your AI provider. Check your API key, network connection, or fallback settings.";
+  if (!raw) return fallback;
+
+  let normalized = raw.trim();
+  try {
+    const parsed = JSON.parse(normalized) as unknown;
+    normalized = extractNestedMessage(parsed) ?? normalized;
+  } catch {
+    const jsonMatch = normalized.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]) as unknown;
+        normalized = extractNestedMessage(parsed) ?? normalized;
+      } catch {
+        // Keep the original string when embedded JSON is malformed.
+      }
+    }
+  }
+
+  const lowered = normalized.toLowerCase();
+  if (
+    lowered.includes("api key") ||
+    lowered.includes("authentication") ||
+    lowered.includes("unauthorized") ||
+    lowered.includes("invalid_api_key") ||
+    lowered.includes("invalid x-api-key") ||
+    lowered.includes("incorrect api key") ||
+    lowered.includes("401")
+  ) {
+    return "Couldn't reach your AI provider. Check your API key and model settings.";
+  }
+
+  if (
+    lowered.includes("timeout") ||
+    lowered.includes("temporarily unavailable") ||
+    lowered.includes("503") ||
+    lowered.includes("429") ||
+    lowered.includes("econnrefused") ||
+    lowered.includes("enotfound") ||
+    lowered.includes("network")
+  ) {
+    return "Couldn't reach your AI provider right now. Check your connection, provider status, or fallback settings.";
+  }
+
+  return fallback;
+}
 
 export function useWebSocket() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -126,12 +216,14 @@ export function useWebSocket() {
   const [workflowEvents, setWorkflowEvents] = useState<WorkflowEvent[]>([]);
   const [goalEvents, setGoalEvents] = useState<GoalEvent[]>([]);
   const [siteEvents, setSiteEvents] = useState<SiteEvent[]>([]);
+  const [notices, setNotices] = useState<SystemNotice[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const streamBufferRef = useRef<string>("");
   const streamIdRef = useRef<string | null>(null);
   const toolCallsRef = useRef<ToolCall[]>([]);
   const subAgentEventsRef = useRef<SubAgentEvent[]>([]);
   const voiceCallbacksRef = useRef<VoiceCallbacks | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -282,6 +374,7 @@ export function useWebSocket() {
         }
       } else if (msg.payload?.text) {
         // Text chunk
+        setIsProcessing(false);
         streamBufferRef.current += msg.payload.text;
 
         if (!streamIdRef.current) {
@@ -311,6 +404,7 @@ export function useWebSocket() {
       }
     } else if (msg.type === "status" && msg.payload?.status === "done") {
       // Stream complete
+      setIsProcessing(false);
       if (streamIdRef.current) {
         const finalId = streamIdRef.current;
         const finalToolCalls = toolCallsRef.current;
@@ -391,6 +485,12 @@ export function useWebSocket() {
           // so no need to duplicate here — just log for debugging
           console.log("[WS] Awareness suggestion:", awarenessEvent.data.title);
         }
+      } else if (payload.source === "sidecar_event" && payload.event?.type === "sidecar_disconnect") {
+        const noticeMessage = createSidecarNotice(payload, msg.timestamp);
+        if (noticeMessage.notice) {
+          setNotices((prev) => [noticeMessage.notice!, ...prev.filter((item) => item.text !== noticeMessage.notice!.text)].slice(0, 3));
+        }
+        setMessages((prev) => [...prev, noticeMessage]);
       } else if (payload.source === "assistant_message" && payload.text) {
         setMessages((prev) => [
           ...prev,
@@ -404,17 +504,19 @@ export function useWebSocket() {
       }
     } else if (msg.type === "error") {
       voiceCallbacksRef.current?.onError(msg.payload?.message);
+      const friendlyMessage = formatProviderErrorMessage(msg.payload?.message);
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "system",
-          content: `Error: ${msg.payload?.message ?? "Unknown error"}`,
+          content: friendlyMessage,
           timestamp: msg.timestamp,
           source: "error",
         },
       ]);
       // Reset stream state on error
+      setIsProcessing(false);
       streamBufferRef.current = "";
       streamIdRef.current = null;
       toolCallsRef.current = [];
@@ -430,7 +532,7 @@ export function useWebSocket() {
   }, [connect]);
 
   const sendMessage = useCallback(
-    (text: string, options?: ChatSendOptions) => {
+    (text: string, options?: { projectId?: string }) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
       const id = crypto.randomUUID();
@@ -447,12 +549,13 @@ export function useWebSocket() {
         },
       ]);
 
+      setIsProcessing(true);
+
       // Send to server
       const msg: WSMessage = {
         type: "chat",
         payload: {
           text,
-          ...(options?.fastMode ? { fast_mode: true } : {}),
           ...(options?.projectId ? { projectId: options.projectId } : {}),
         },
         id,
@@ -463,8 +566,13 @@ export function useWebSocket() {
     []
   );
 
+  const dismissNotice = useCallback((noticeId: string) => {
+    setNotices((prev) => prev.filter((notice) => notice.id !== noticeId));
+  }, []);
+
   return {
-    messages, isConnected, sendMessage, taskEvents, contentEvents, agentActivity, workflowEvents, goalEvents, siteEvents,
+    messages, isConnected, sendMessage, taskEvents, contentEvents, agentActivity, workflowEvents, goalEvents, siteEvents, notices, dismissNotice,
+    isProcessing,
     wsRef,
     voiceCallbacksRef,
   };

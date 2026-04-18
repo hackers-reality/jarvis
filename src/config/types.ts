@@ -9,6 +9,12 @@ export type GoogleConfig = {
   client_secret: string;
 };
 
+export type SpotifyConfig = {
+  client_id: string;
+  client_secret: string;
+};
+
+
 export type ChannelConfig = {
   telegram?: {
     enabled: boolean;
@@ -24,15 +30,16 @@ export type ChannelConfig = {
 };
 
 export type STTConfig = {
-  provider: 'openai' | 'groq' | 'local';
+  provider: 'openai' | 'groq' | 'local' | 'sarvam';
   openai?: { api_key: string; model?: string };
   groq?: { api_key: string; model?: string };
   local?: { endpoint: string; model?: string; server_type?: 'whisper_cpp' | 'openai_compatible' };
+  sarvam?: { api_key: string; model?: string };
 };
 
 export type TTSConfig = {
   enabled: boolean;
-  provider?: 'edge' | 'elevenlabs';  // default: 'edge'
+  provider?: 'edge' | 'elevenlabs' | 'sarvam';  // default: 'edge'
   voice?: string;       // e.g. 'en-US-AriaNeural' (edge)
   rate?: string;        // e.g. '+0%', '+10%' (edge)
   volume?: string;      // e.g. '+0%' (edge)
@@ -42,6 +49,13 @@ export type TTSConfig = {
     model?: string;           // 'eleven_flash_v2_5' | 'eleven_multilingual_v2'
     stability?: number;       // 0-1
     similarity_boost?: number; // 0-1
+  };
+  sarvam?: {
+    api_key: string;
+    model?: string;
+    language?: string;
+    speaker?: string;
+    sampling_rate?: number;
   };
 };
 
@@ -141,7 +155,9 @@ export type JarvisConfig = {
   };
   auth?: AuthConfig;
   google?: GoogleConfig;
+  spotify?: SpotifyConfig;
   channels?: ChannelConfig;
+
   stt?: STTConfig;
   tts?: TTSConfig;
   desktop?: DesktopConfig;
@@ -155,7 +171,7 @@ export type JarvisConfig = {
     openai?: { api_key: string; model?: string };
     groq?: { api_key: string; model?: string };
     gemini?: { api_key: string; model?: string };
-    ollama?: { base_url?: string; model?: string };
+    ollama?: { base_url?: string; api_key?: string; model?: string };
     openrouter?: { api_key: string; model?: string };
   };
   personality: {
@@ -245,7 +261,8 @@ export const DEFAULT_CONFIG: JarvisConfig = {
       model: 'gemini-3-flash-preview',
     },
     ollama: {
-      base_url: 'http://ollama:11434',
+      base_url: 'http://localhost:11434',
+      api_key: '',
       model: 'llama3',
     },
     openrouter: {

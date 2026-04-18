@@ -7,6 +7,7 @@ import type {
   LLMTool,
   LLMToolCall,
 } from './provider.ts';
+import { compactHistory, calculateHistoryBudget } from './history.ts';
 
 type GroqMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -320,50 +321,21 @@ export class GroqProvider implements LLMProvider {
     if (systemMessage) compacted.push(systemMessage);
 
     const startIndex = systemMessage ? 1 : 0;
-    const chunks = this.chunkMessages(messages.slice(startIndex));
-    const keptChunks: LLMMessage[][] = [];
+    const keptTail: LLMMessage[] = [];
 
-    for (let i = chunks.length - 1; i >= 0; i--) {
-      const chunk = chunks[i]!;
-      const size = this.measureChunk(chunk);
-      if (keptChunks.length > 0 && used + size > budget) {
+    for (let i = messages.length - 1; i >= startIndex; i--) {
+      const current = messages[i]!;
+      const size = this.measureMessage(current);
+      if (keptTail.length > 0 && used + size > budget) {
         break;
       }
-      keptChunks.push(chunk);
+      keptTail.push(current);
       used += size;
     }
 
-    keptChunks.reverse();
-    for (const chunk of keptChunks) {
-      compacted.push(...chunk);
-    }
+    keptTail.reverse();
+    compacted.push(...keptTail);
     return compacted;
-  }
-
-  private chunkMessages(messages: LLMMessage[]): LLMMessage[][] {
-    const chunks: LLMMessage[][] = [];
-
-    for (let i = 0; i < messages.length; i += 1) {
-      const current = messages[i]!;
-
-      if (current.role === 'assistant' && current.tool_calls && current.tool_calls.length > 0) {
-        const chunk: LLMMessage[] = [current];
-        i += 1;
-
-        while (i < messages.length && messages[i]!.role === 'tool') {
-          chunk.push(messages[i]!);
-          i += 1;
-        }
-
-        i -= 1;
-        chunks.push(chunk);
-        continue;
-      }
-
-      chunks.push([current]);
-    }
-
-    return chunks;
   }
 
   private measureMessage(message: LLMMessage): number {
@@ -372,10 +344,6 @@ export class GroqProvider implements LLMProvider {
       : message.content.map((b) => b.type === 'text' ? b.text : '[image]').join('\n');
     const toolCallsSize = message.tool_calls ? JSON.stringify(message.tool_calls).length : 0;
     return content.length + toolCallsSize + 128;
-  }
-
-  private measureChunk(messages: LLMMessage[]): number {
-    return messages.reduce((total, message) => total + this.measureMessage(message), 0);
   }
 
   private convertTools(tools: LLMTool[]): GroqToolDef[] {

@@ -8,7 +8,8 @@ type LLMConfig = {
   openai: { model: string; has_api_key: boolean } | null;
   groq: { model: string; has_api_key: boolean } | null;
   gemini: { model: string; has_api_key: boolean } | null;
-  ollama: { base_url: string; model: string } | null;
+  ollama: { base_url: string; model: string; has_api_key: boolean } | null;
+
   openrouter: { model: string; has_api_key: boolean } | null;
 };
 
@@ -113,10 +114,12 @@ export function LLMPanel() {
   const [geminiModel, setGeminiModel] = useState("gemini-3-flash-preview");
   const [geminiCustomModel, setGeminiCustomModel] = useState("");
 
-  // Ollama
+  const [ollamaKey, setOllamaKey] = useState("");
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("http://localhost:11434");
   const [ollamaModel, setOllamaModel] = useState("llama3");
   const [ollamaCustomModel, setOllamaCustomModel] = useState("");
+  const [ollamaIsCloud, setOllamaIsCloud] = useState(false);
+
 
   // OpenRouter
   const [openrouterKey, setOpenrouterKey] = useState("");
@@ -178,6 +181,7 @@ export function LLMPanel() {
     }
     if (config.ollama) {
       setOllamaBaseUrl(config.ollama.base_url);
+      setOllamaIsCloud(config.ollama.base_url.includes("ollama.com"));
       const m = config.ollama.model;
       if (OLLAMA_MODELS.includes(m)) {
         setOllamaModel(m);
@@ -228,7 +232,9 @@ export function LLMPanel() {
         ollama: {
           base_url: ollamaBaseUrl,
           model: resolveModel(ollamaModel, ollamaCustomModel),
+          ...(ollamaKey ? { api_key: ollamaKey } : {}),
         },
+
         openrouter: {
           model: resolveModel(openrouterModel, openrouterCustomModel),
           ...(openrouterKey ? { api_key: openrouterKey } : {}),
@@ -243,7 +249,9 @@ export function LLMPanel() {
       setOpenaiKey("");
       setGroqKey("");
       setGeminiKey("");
+      setOllamaKey("");
       setOpenrouterKey("");
+
       refetch();
     } catch (err) {
       setMessage({ text: err instanceof Error ? err.message : "Save failed", type: "error" });
@@ -271,8 +279,10 @@ export function LLMPanel() {
         body.api_key = geminiKey || undefined;
         body.model = resolveModel(geminiModel, geminiCustomModel);
       } else if (provider === "ollama") {
+        body.api_key = ollamaKey || undefined;
         body.base_url = ollamaBaseUrl;
         body.model = resolveModel(ollamaModel, ollamaCustomModel);
+
       } else if (provider === "openrouter") {
         body.api_key = openrouterKey || undefined;
         body.model = resolveModel(openrouterModel, openrouterCustomModel);
@@ -289,6 +299,16 @@ export function LLMPanel() {
       }));
     } finally {
       setTesting(null);
+    }
+  };
+
+  const toggleOllamaMode = () => {
+    const nextCloud = !ollamaIsCloud;
+    setOllamaIsCloud(nextCloud);
+    if (nextCloud) {
+      setOllamaBaseUrl("https://ollama.com/api");
+    } else {
+      setOllamaBaseUrl("http://localhost:11434");
     }
   };
 
@@ -408,9 +428,9 @@ export function LLMPanel() {
           name="Ollama"
           provider="ollama"
           isPrimary={primary === "ollama"}
-          hasKey={!!config.ollama}
-          apiKey=""
-          onApiKeyChange={() => {}}
+          hasKey={config.ollama?.has_api_key ?? false}
+          apiKey={ollamaKey}
+          onApiKeyChange={setOllamaKey}
           model={ollamaModel}
           customModel={ollamaCustomModel}
           onModelChange={setOllamaModel}
@@ -423,10 +443,14 @@ export function LLMPanel() {
           onFallbackToggle={() => toggleFallback("ollama")}
           expanded={!!expanded.ollama}
           onToggleExpand={() => setExpanded((s) => ({ ...s, ollama: !s.ollama }))}
-          hideApiKey
+          hideApiKey={false}
           baseUrl={ollamaBaseUrl}
           onBaseUrlChange={setOllamaBaseUrl}
+          isCloud={ollamaIsCloud}
+          onToggleCloud={toggleOllamaMode}
         />
+
+
 
         <ProviderSection
           name="OpenRouter"
@@ -505,6 +529,8 @@ type ProviderSectionProps = {
   hideApiKey?: boolean;
   baseUrl?: string;
   onBaseUrlChange?: (v: string) => void;
+  isCloud?: boolean;
+  onToggleCloud?: () => void;
 };
 
 function ToggleSwitch({ checked, onChange, disabled }: { checked: boolean; onChange: () => void; disabled?: boolean }) {
@@ -552,6 +578,7 @@ function ProviderSection({
   isFallback, onFallbackToggle,
   expanded, onToggleExpand,
   hideApiKey, baseUrl, onBaseUrlChange,
+  isCloud, onToggleCloud,
 }: ProviderSectionProps) {
   return (
     <div style={providerCardStyle}>
@@ -588,6 +615,48 @@ function ProviderSection({
 
       {expanded && (
         <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "10px" }}>
+          {provider === "ollama" && onToggleCloud && (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "4px" }}>
+              <div style={fieldLabelStyle}>Connection Mode</div>
+              <div
+                style={{
+                  display: "flex",
+                  borderRadius: "6px",
+                  overflow: "hidden",
+                  border: "1px solid var(--j-border)",
+                }}
+              >
+                <button
+                  onClick={isCloud ? onToggleCloud : undefined}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "11px",
+                    background: !isCloud ? "var(--j-accent)" : "var(--j-surface)",
+                    color: !isCloud ? "#000" : "var(--j-text-dim)",
+                    border: "none",
+                    cursor: "pointer",
+                    fontWeight: !isCloud ? 600 : 400,
+                  }}
+                >
+                  Local
+                </button>
+                <button
+                  onClick={!isCloud ? onToggleCloud : undefined}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "11px",
+                    background: isCloud ? "var(--j-accent)" : "var(--j-surface)",
+                    color: isCloud ? "#000" : "var(--j-text-dim)",
+                    border: "none",
+                    cursor: "pointer",
+                    fontWeight: isCloud ? 600 : 400,
+                  }}
+                >
+                  Cloud
+                </button>
+              </div>
+            </div>
+          )}
           {!hideApiKey && (
             <div>
               <div style={fieldLabelStyle}>API Key</div>

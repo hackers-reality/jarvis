@@ -1,9 +1,11 @@
 import React, { useEffect, useRef } from "react";
 import type { ChatMessage } from "../../hooks/useWebSocket";
 import { MessageBubble } from "./MessageBubble";
+import { TypingIndicator } from "./TypingIndicator";
 
 type Props = {
   messages: ChatMessage[];
+  isProcessing?: boolean;
 };
 
 function formatTimeDivider(timestamp: number): string {
@@ -27,7 +29,7 @@ function shouldShowTimeDivider(current: ChatMessage, previous: ChatMessage | und
   return gap > 10 * 60 * 1000; // 10 minutes
 }
 
-export function MessageList({ messages }: Props) {
+export function MessageList({ messages, isProcessing }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -60,6 +62,7 @@ export function MessageList({ messages }: Props) {
             <MessageBubble message={msg} />
           </React.Fragment>
         ))}
+        {isProcessing && <TypingIndicator />}
         <div ref={bottomRef} />
       </div>
     </div>

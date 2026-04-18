@@ -12,6 +12,7 @@ import type { ApprovalManager, ApprovalRequest } from '../authority/approval.ts'
 import type { AuditTrail } from '../authority/audit.ts';
 import type { EmergencyController } from '../authority/emergency.ts';
 import { getActionForTool } from '../authority/tool-action-map.ts';
+import { CheckpointManager, type AgentState } from '../daemon/checkpoint-manager.ts';
 
 const MAX_TOOL_ITERATIONS = 200;
 const MAX_TOOL_RESULT_CHARS = 6000; // Cap individual tool results to control context size
@@ -117,6 +118,27 @@ export class AgentOrchestrator {
   }
 
   /**
+   * [TITAN] Resume primary agent from a checkpoint.
+   * If a checkpoint exists for the conversation, hydrate the agent's state.
+   */
+  async resumeFromCheckpoint(conversationId: string): Promise<boolean> {
+    const primary = this.getPrimary();
+    if (!primary) return false;
+
+    const mgr = new CheckpointManager();
+    const state = mgr.loadCheckpoint(conversationId);
+    if (!state) return false;
+
+    console.log(`[TITAN] Resuming context for conversation ${conversationId}...`);
+    primary.setMessages(state.messages);
+    if (state.memory) {
+      // If AgentInstance supports extended memory, hydrate it here
+      // primary.hydrateMemory(state.memory);
+    }
+    return true;
+  }
+
+  /**
    * Spawn a sub-agent under a parent
    */
   spawnSubAgent(
@@ -204,7 +226,7 @@ export class AgentOrchestrator {
    * Process a user message through the primary agent (non-streaming).
    * Includes the tool execution loop: LLM → tool_calls → execute → re-call → repeat.
    */
-  async processMessage(systemPrompt: string, message: string): Promise<string> {
+  async processMessage(systemPrompt: string, message: string, conversationId: string): Promise<string> {
     const primary = this.getPrimary();
     if (!primary) {
       throw new Error('No primary agent exists. Create one first.');
@@ -234,7 +256,9 @@ export class AgentOrchestrator {
       const llmResponse: LLMResponse = await this.llmManager.chat(messages, { tools });
 
       if (llmResponse.finish_reason === 'tool_use' && llmResponse.tool_calls.length > 0) {
-        // Add assistant message with tool calls to local messages
+        // [TITAN] Persist assistant message with tool calls
+        primary.addMessage('assistant', llmResponse.content, llmResponse.tool_calls);
+        // Also add to local messages for the next LLM turn
         messages.push({
           role: 'assistant',
           content: llmResponse.content,
@@ -244,6 +268,10 @@ export class AgentOrchestrator {
         // Execute each tool and add results
         for (const tc of llmResponse.tool_calls) {
           const result = await this.executeTool(tc);
+          
+          // [TITAN] Persist tool result to agent history
+          primary.addMessage('tool', result, undefined, tc.id);
+
           messages.push({
             role: 'tool',
             content: result,
@@ -260,6 +288,9 @@ export class AgentOrchestrator {
             }
           }
         }
+
+        // [TITAN] Partial Checkpoint (post-tool use)
+        this.saveCheckpoint(primary, conversationId);
 
         // Continue loop to re-call LLM with tool results
         continue;
@@ -278,7 +309,37 @@ export class AgentOrchestrator {
 
     // Add final response to persistent history
     primary.addMessage('assistant', finalText);
+
+    // [TITAN] Final Checkpoint
+    this.saveCheckpoint(primary, conversationId);
+
     return finalText;
+  }
+
+  /**
+   * [TITAN] Persistence helper: Save current agent state to SQLite.
+   */
+  private saveCheckpoint(agent: AgentInstance, conversationId: string): void {
+    try {
+      const state: AgentState = {
+        memory: agent.getMessages(),
+        thoughts: [], // Can be extended to capture internal reasoning blocks
+        tool_outputs: {}, // Could capture exact mapping if needed
+      };
+
+      CheckpointManager.save({
+        conversation_id: conversationId,
+        agent_id: agent.id,
+        parent_checkpoint_id: null, // Could be linked to previous checkpoint for branching
+        state,
+        metadata: {
+          role: agent.agent.role.name,
+          timestamp: Date.now(),
+        },
+      });
+    } catch (err) {
+      console.error('[Orchestrator] Checkpoint failed:', err);
+    }
   }
 
   /**
@@ -286,7 +347,7 @@ export class AgentOrchestrator {
    * Yields text/tool_call events through all iterations.
    * Only emits 'done' when the final response is complete.
    */
-  async *streamMessage(systemPrompt: string, message: string): AsyncIterable<LLMStreamEvent> {
+  async *streamMessage(systemPrompt: string, message: string, conversationId: string): AsyncIterable<LLMStreamEvent> {
     const primary = this.getPrimary();
     if (!primary) {
       throw new Error('No primary agent exists. Create one first.');
@@ -385,13 +446,19 @@ export class AgentOrchestrator {
         };
         // Add final response to persistent history (only user-facing text)
         primary.addMessage('assistant', finalText);
+
+        // [TITAN] Final Checkpoint
+        this.saveCheckpoint(primary, conversationId);
+
         return;
       }
 
       // Tool calls present — execute them
       finalText += accumulatedText;
 
-      // Add assistant message with tool calls to local messages
+      // [TITAN] Persist assistant message with tool calls
+      primary.addMessage('assistant', accumulatedText, toolCalls);
+      // Also add to local messages for the next LLM turn
       messages.push({
         role: 'assistant',
         content: accumulatedText,
@@ -401,6 +468,10 @@ export class AgentOrchestrator {
       // Execute each tool and add results
       for (const tc of toolCalls) {
         const result = await this.executeTool(tc);
+        
+        // [TITAN] Persist tool result to agent history
+        primary.addMessage('tool', result, undefined, tc.id);
+
         messages.push({
           role: 'tool',
           content: result,
@@ -408,6 +479,11 @@ export class AgentOrchestrator {
         });
         const logStr = typeof result === 'string' ? result.slice(0, 100) : `[${result.length} content blocks]`;
         console.log(`[Orchestrator] Tool ${tc.name} → ${logStr}...`);
+
+        // Visual feedback for the UI when a screenshot/vision tool is used
+        if (typeof result !== 'string') {
+          yield { type: 'text', text: `\n[Visual sense captured via ${tc.name}]` };
+        }
 
         // Inject document markers into the stream so the UI can render download cards
         if (typeof result === 'string') {
@@ -417,6 +493,9 @@ export class AgentOrchestrator {
           }
         }
       }
+
+      // [TITAN] Partial Checkpoint (post-tool use)
+      this.saveCheckpoint(primary, conversationId);
 
       // Continue loop — will stream next LLM response
     }
@@ -434,6 +513,9 @@ export class AgentOrchestrator {
       },
     };
     primary.addMessage('assistant', finalText);
+
+    // [TITAN] Final Checkpoint
+    this.saveCheckpoint(primary, conversationId);
   }
 
   /**

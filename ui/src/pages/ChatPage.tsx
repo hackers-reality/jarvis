@@ -1,6 +1,6 @@
-import React, { useEffect } from "react";
-import type { ChatMessage, ChatSendOptions } from "../hooks/useWebSocket";
-import type { UseVoiceReturn, VoiceState } from "../hooks/useVoice";
+import React from "react";
+import type { ChatMessage } from "../hooks/useWebSocket";
+import type { UseVoiceReturn } from "../hooks/useVoice";
 import { MessageList } from "../components/chat/MessageList";
 import { ChatInput } from "../components/chat/ChatInput";
 import "../styles/chat.css";
@@ -8,27 +8,12 @@ import "../styles/chat.css";
 type ChatPageProps = {
   messages: ChatMessage[];
   isConnected: boolean;
-  sendMessage: (text: string, options?: ChatSendOptions) => void;
+  sendMessage: (text: string) => void;
   voice?: UseVoiceReturn;
+  isProcessing?: boolean;
 };
 
-export default function ChatPage({ messages, isConnected, sendMessage, voice }: ChatPageProps) {
-  const [fastMode, setFastMode] = React.useState<boolean>(() => {
-    try {
-      return localStorage.getItem("jarvis.fastChatMode") === "true";
-    } catch {
-      return false;
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem("jarvis.fastChatMode", String(fastMode));
-    } catch {
-      // ignore storage write failures
-    }
-  }, [fastMode]);
-
+export default function ChatPage({ messages, isConnected, sendMessage, voice, isProcessing }: ChatPageProps) {
   const voiceStatus = voice
     ? voice.voiceState === "speaking" || voice.ttsAudioPlaying
       ? "JARVIS is speaking..."
@@ -38,36 +23,6 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
           ? "Listening..."
           : null
     : null;
-
-  const isLikelyQuestion = (text: string) => {
-    const normalized = text.trim();
-    if (!normalized) return false;
-    if (/[?]["')\]]*$/.test(normalized)) return true;
-    return /\b(can|could|would|will|should|do|does|did|are|is|want|need|which|what|when|where|why|how)\b/i.test(normalized) && /\b(you|your)\b/i.test(normalized);
-  };
-
-  const prevVoiceStateRef = React.useRef<VoiceState>("idle");
-  const lastAutoFollowupRef = React.useRef<string | null>(null);
-  useEffect(() => {
-    if (!voice) return;
-    const prev = prevVoiceStateRef.current;
-    if (prev === "speaking" && voice.voiceState === "idle") {
-      const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-      if (lastAssistant && isLikelyQuestion(lastAssistant.content) && lastAutoFollowupRef.current !== lastAssistant.id) {
-        lastAutoFollowupRef.current = lastAssistant.id;
-        // Retry in short bursts because browser mic/wake recognizer handoff can race right after TTS ends.
-        const retryDelays = [120, 420, 920];
-        retryDelays.forEach((delay) => {
-          window.setTimeout(() => {
-            if (!voice.ttsAudioPlaying && voice.voiceState === "idle") {
-              voice.startRecording();
-            }
-          }, delay);
-        });
-      }
-    }
-    prevVoiceStateRef.current = voice.voiceState;
-  }, [voice, messages]);
 
   return (
     <div className="chat-page">
@@ -121,28 +76,11 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
       )}
 
       {/* Messages */}
-      <MessageList messages={messages} />
-
-      <button
-        className={`chat-fast-toggle ${fastMode ? "chat-fast-toggle-active" : ""}`}
-        type="button"
-        role="switch"
-        aria-checked={fastMode}
-        onClick={() => setFastMode((v) => !v)}
-        title={`Fast Chat ${fastMode ? "on" : "off"}`}
-      >
-        <span className="chat-fast-toggle-labels">
-          <span className="chat-fast-toggle-title">FAST CHAT</span>
-          <span className="chat-fast-toggle-state">{fastMode ? "No tools" : "Off"}</span>
-        </span>
-        <span className="chat-fast-toggle-switch" aria-hidden="true">
-          <span className="chat-fast-toggle-thumb" />
-        </span>
-      </button>
+      <MessageList messages={messages} isProcessing={isProcessing} />
 
       {/* Input */}
       <ChatInput
-        onSend={(text) => sendMessage(text, { fastMode })}
+        onSend={sendMessage}
         disabled={!isConnected}
         voice={voice ? {
           voiceState: voice.voiceState,

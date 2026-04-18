@@ -15,7 +15,7 @@ import {
 } from './helpers.ts';
 import { DEFAULT_CONFIG, type JarvisConfig } from '../config/types.ts';
 import { loadConfig, saveConfig } from '../config/loader.ts';
-import { installAutostart, getAutostartName } from './autostart.ts';
+import { installAutostart, startAutostartService, getAutostartName, isAutostartSupported } from './autostart.ts';
 import { runDependencyCheck } from './deps.ts';
 import { initDatabase, closeDb } from '../vault/schema.ts';
 import { saveUserProfile } from '../vault/user-profile.ts';
@@ -92,9 +92,15 @@ export async function runOnboard(): Promise<void> {
         if (key) config.llm.anthropic = { ...config.llm.anthropic, api_key: key };
       }
     } else {
-      const key = await askSecret('Enter your Anthropic API key (from console.anthropic.com)');
-      if (key) {
-        config.llm.anthropic = { ...config.llm.anthropic, api_key: key };
+      const configureNow = await askYesNo('Add your Anthropic API key now?', true);
+      if (configureNow) {
+        const key = await askSecret('Enter your Anthropic API key (from console.anthropic.com)');
+        if (key) {
+          config.llm.anthropic = { ...config.llm.anthropic, api_key: key };
+        } else {
+          printWarn('No API key set. JARVIS won\'t work without one.');
+          printInfo('Set it later in ~/.jarvis/config.yaml');
+        }
       } else {
         printWarn('No API key set. JARVIS won\'t work without one.');
         printInfo('Set it later in ~/.jarvis/config.yaml');
@@ -123,9 +129,14 @@ export async function runOnboard(): Promise<void> {
         if (key) config.llm.openai = { ...config.llm.openai, api_key: key };
       }
     } else {
-      const key = await askSecret('Enter your OpenAI API key (from platform.openai.com)');
-      if (key) {
-        config.llm.openai = { ...config.llm.openai, api_key: key };
+      const configureNow = await askYesNo('Add your OpenAI API key now?', true);
+      if (configureNow) {
+        const key = await askSecret('Enter your OpenAI API key (from platform.openai.com)');
+        if (key) {
+          config.llm.openai = { ...config.llm.openai, api_key: key };
+        } else {
+          printWarn('No API key set. JARVIS won\'t work without one.');
+        }
       } else {
         printWarn('No API key set. JARVIS won\'t work without one.');
       }
@@ -159,9 +170,14 @@ export async function runOnboard(): Promise<void> {
         if (key) config.llm.groq = { ...config.llm.groq, api_key: key };
       }
     } else {
-      const key = await askSecret('Enter your Groq API key (from console.groq.com)');
-      if (key) {
-        config.llm.groq = { ...config.llm.groq, api_key: key };
+      const configureNow = await askYesNo('Add your Groq API key now?', true);
+      if (configureNow) {
+        const key = await askSecret('Enter your Groq API key (from console.groq.com)');
+        if (key) {
+          config.llm.groq = { ...config.llm.groq, api_key: key };
+        } else {
+          printWarn('No API key set. JARVIS won\'t work without one.');
+        }
       } else {
         printWarn('No API key set. JARVIS won\'t work without one.');
       }
@@ -189,9 +205,14 @@ export async function runOnboard(): Promise<void> {
         if (key) config.llm.gemini = { ...config.llm.gemini, api_key: key };
       }
     } else {
-      const key = await askSecret('Enter your Google AI API key (from aistudio.google.com)');
-      if (key) {
-        config.llm.gemini = { ...config.llm.gemini, api_key: key };
+      const configureNow = await askYesNo('Add your Google AI API key now?', true);
+      if (configureNow) {
+        const key = await askSecret('Enter your Google AI API key (from aistudio.google.com)');
+        if (key) {
+          config.llm.gemini = { ...config.llm.gemini, api_key: key };
+        } else {
+          printWarn('No API key set. JARVIS won\'t work without one.');
+        }
       } else {
         printWarn('No API key set. JARVIS won\'t work without one.');
       }
@@ -221,9 +242,14 @@ export async function runOnboard(): Promise<void> {
         if (key) config.llm.openrouter = { ...config.llm.openrouter, api_key: key };
       }
     } else {
-      const key = await askSecret('Enter your OpenRouter API key (from openrouter.ai/keys)');
-      if (key) {
-        config.llm.openrouter = { ...config.llm.openrouter, api_key: key };
+      const configureNow = await askYesNo('Add your OpenRouter API key now?', true);
+      if (configureNow) {
+        const key = await askSecret('Enter your OpenRouter API key (from openrouter.ai/keys)');
+        if (key) {
+          config.llm.openrouter = { ...config.llm.openrouter, api_key: key };
+        } else {
+          printWarn('No API key set. JARVIS won\'t work without one.');
+        }
       } else {
         printWarn('No API key set. JARVIS won\'t work without one.');
       }
@@ -320,20 +346,35 @@ export async function runOnboard(): Promise<void> {
   if (setupFallbacks) {
     for (const fb of config.llm.fallback) {
       if (fb === 'anthropic' && (!config.llm.anthropic?.api_key || config.llm.anthropic.api_key === '')) {
-        const key = await askSecret('Anthropic API key (for fallback)');
-        if (key) config.llm.anthropic = { ...config.llm.anthropic, api_key: key, model: config.llm.anthropic?.model ?? 'claude-sonnet-4-6' };
+        const configureProvider = await askYesNo('Configure Anthropic as a fallback provider?', false);
+        if (configureProvider) {
+          const key = await askSecret('Anthropic API key (for fallback)');
+          if (key) config.llm.anthropic = { ...config.llm.anthropic, api_key: key, model: config.llm.anthropic?.model ?? 'claude-sonnet-4-6' };
+        }
       } else if (fb === 'openai' && (!config.llm.openai?.api_key || config.llm.openai.api_key === '')) {
-        const key = await askSecret('OpenAI API key (for fallback)');
-        if (key) config.llm.openai = { ...config.llm.openai, api_key: key, model: config.llm.openai?.model ?? 'gpt-5.4' };
+        const configureProvider = await askYesNo('Configure OpenAI as a fallback provider?', false);
+        if (configureProvider) {
+          const key = await askSecret('OpenAI API key (for fallback)');
+          if (key) config.llm.openai = { ...config.llm.openai, api_key: key, model: config.llm.openai?.model ?? 'gpt-5.4' };
+        }
       } else if (fb === 'groq' && (!config.llm.groq?.api_key || config.llm.groq.api_key === '')) {
-        const key = await askSecret('Groq API key (for fallback)');
-        if (key) config.llm.groq = { ...config.llm.groq, api_key: key, model: config.llm.groq?.model ?? 'llama-3.3-70b-versatile' };
+        const configureProvider = await askYesNo('Configure Groq as a fallback provider?', false);
+        if (configureProvider) {
+          const key = await askSecret('Groq API key (for fallback)');
+          if (key) config.llm.groq = { ...config.llm.groq, api_key: key, model: config.llm.groq?.model ?? 'llama-3.3-70b-versatile' };
+        }
       } else if (fb === 'gemini' && (!config.llm.gemini?.api_key || config.llm.gemini.api_key === '')) {
-        const key = await askSecret('Google AI API key (for fallback)');
-        if (key) config.llm.gemini = { ...config.llm.gemini, api_key: key, model: config.llm.gemini?.model ?? 'gemini-3-flash-preview' };
+        const configureProvider = await askYesNo('Configure Gemini as a fallback provider?', false);
+        if (configureProvider) {
+          const key = await askSecret('Google AI API key (for fallback)');
+          if (key) config.llm.gemini = { ...config.llm.gemini, api_key: key, model: config.llm.gemini?.model ?? 'gemini-3-flash-preview' };
+        }
       } else if (fb === 'openrouter' && (!config.llm.openrouter?.api_key || config.llm.openrouter.api_key === '')) {
-        const key = await askSecret('OpenRouter API key (for fallback)');
-        if (key) config.llm.openrouter = { ...config.llm.openrouter, api_key: key, model: config.llm.openrouter?.model ?? 'anthropic/claude-sonnet-4' };
+        const configureProvider = await askYesNo('Configure OpenRouter as a fallback provider?', false);
+        if (configureProvider) {
+          const key = await askSecret('OpenRouter API key (for fallback)');
+          if (key) config.llm.openrouter = { ...config.llm.openrouter, api_key: key, model: config.llm.openrouter?.model ?? 'anthropic/claude-sonnet-4' };
+        }
       } else if (fb === 'ollama') {
         const setupOllama = await askYesNo('Configure Ollama as fallback?', false);
         if (setupOllama) {
@@ -581,21 +622,30 @@ export async function runOnboard(): Promise<void> {
     printInfo(`Using defaults: level ${config.authority.default_level}, governed: ${config.authority.governed_categories.join(', ')}`);
   }
 
-  // ── Step 10: Autostart ────────────────────────────────────────────
+  // ── Step 10: Keepalive ────────────────────────────────────────────
 
-  printStep(10, TOTAL_STEPS, 'Autostart');
+  printStep(10, TOTAL_STEPS, 'Keepalive');
   const platform = detectPlatform();
+  let enableKeepalive = false;
+  const keepaliveSupported = isAutostartSupported();
 
-  if (platform === 'wsl') {
-    printInfo('WSL detected. Autostart is not supported in WSL.');
+  if (!keepaliveSupported) {
+    if (platform === 'wsl') {
+      printInfo('WSL2 detected, but the user systemd service manager is not available in this session.');
+      printInfo('Enable systemd in WSL, then rerun onboard to use 24/7 keepalive mode.');
+    } else {
+      printInfo('Keepalive mode is not supported in this environment.');
+    }
     printInfo('Start JARVIS manually with: jarvis start');
   } else {
-    console.log(`  Autostart mechanism: ${c.bold(getAutostartName())}\n`);
-    const setupAutostart = await askYesNo('Start JARVIS automatically on login?', false);
-    if (setupAutostart) {
-      await installAutostart();
+    if (process.platform === 'linux' || process.platform === 'darwin') {
+      const platformHint = platform === 'wsl' ? ' on WSL2' : '';
+      console.log(`  Keepalive mode uses ${c.bold(getAutostartName())}${platformHint} to keep JARVIS running`);
+      console.log('  after you close the terminal, with automatic restart if the service exits.\n');
+      enableKeepalive = await askYesNo('Activate JARVIS keepalive mode?', false);
     } else {
-      printInfo('Skipped. Start manually with: jarvis start');
+      console.log(`  Autostart mechanism: ${c.bold(getAutostartName())}\n`);
+      enableKeepalive = await askYesNo('Start JARVIS automatically?', false);
     }
   }
 
@@ -661,6 +711,7 @@ export async function runOnboard(): Promise<void> {
     ['Telegram', config.channels?.telegram?.enabled ? 'enabled' : 'disabled'],
     ['Discord', config.channels?.discord?.enabled ? 'enabled' : 'disabled'],
     ['Authority', `level ${config.authority.default_level}`],
+    ['Keepalive', enableKeepalive ? 'enabled' : 'disabled'],
     ['Port', String(config.daemon.port)],
   ];
 
@@ -671,10 +722,17 @@ export async function runOnboard(): Promise<void> {
   console.log('');
 
   const doSave = await askYesNo('Save this configuration?', true);
+  let keepaliveStarted = false;
   if (doSave) {
     await saveConfig(config);
     printOk(`Config saved to ${CONFIG_PATH}`);
 
+    if (enableKeepalive) {
+      const installed = await installAutostart();
+      if (installed) {
+        keepaliveStarted = await startAutostartService();
+      }
+    }
     if (userProfileAnswers && Object.keys(userProfileAnswers).length > 0) {
       try {
         initDatabase(resolveOnboardDbPath(config));
@@ -693,7 +751,12 @@ export async function runOnboard(): Promise<void> {
 
   // Offer to start daemon
   console.log('');
-  const startNow = await askYesNo('Start JARVIS now?', true);
+  const keepaliveActive = doSave && keepaliveStarted;
+  const defaultStartNow = keepaliveActive ? false : true;
+  const startNowPrompt = keepaliveActive
+    ? 'Start another foreground JARVIS process now?'
+    : 'Start JARVIS now?';
+  const startNow = await askYesNo(startNowPrompt, defaultStartNow);
   if (startNow) {
     console.log(c.cyan('\nStarting J.A.R.V.I.S. daemon...\n'));
     closeRL();
@@ -701,7 +764,11 @@ export async function runOnboard(): Promise<void> {
     const { startDaemon } = await import('../daemon/index.ts');
     await startDaemon();
   } else {
-    console.log(c.dim('\nStart later with: jarvis start\n'));
+    if (keepaliveActive) {
+      console.log(c.dim('\nJARVIS keepalive mode is managing the daemon.\n'));
+    } else {
+      console.log(c.dim('\nStart later with: jarvis start\n'));
+    }
     closeRL();
   }
 }

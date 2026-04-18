@@ -289,6 +289,8 @@ export async function runSubAgent(opts: RunSubAgentOptions): Promise<SubAgentRes
       toolsUsed: [...new Set(toolsUsed)],
       tokensUsed: totalUsage,
     };
+  } finally {
+    agent.idle();
   }
 }
 

@@ -31,6 +31,29 @@ type Props = {
   agentActivity: AgentActivityEvent[];
 };
 
+function getAgentPosition(agent: AgentWithLive, index: number): OrbitalPosition {
+  if (!agent?.roleId) {
+    return { left: "50%", top: "48%", ring: "outer" };
+  }
+
+  const staticPos = ORBITAL_POSITIONS[agent.roleId];
+  if (staticPos) return staticPos;
+
+  // Fallback for newly discovered specialists: place on the outer ring in a semi-circle
+  const totalSlots = 8;
+  const divisor = totalSlots > 1 ? totalSlots - 1 : 1; // Prevent NaN from division by zero
+  const slot = index % totalSlots;
+  const angle = (Math.PI / divisor) * slot + Math.PI; // Bottom half
+  const radiusX = 40;
+  const radiusY = 40;
+
+  return {
+    left: `${(50 + Math.cos(angle) * radiusX).toFixed(2)}%`,
+    top: `${(48 + Math.sin(angle) * radiusY).toFixed(2)}%`,
+    ring: "outer",
+  };
+}
+
 function pctToNum(pct: string): number {
   return parseFloat(pct.replace("%", ""));
 }
@@ -101,8 +124,17 @@ function getIdleBubbleBg(agent: AgentWithLive, ring: "inner" | "outer"): string 
 export default function OrbitalView({ agents, agentActivity }: Props) {
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
 
+  // Safety guard: Ensure agents is always an array
+  if (!Array.isArray(agents)) {
+    return (
+      <div style={{ padding: "40px", color: "var(--j-text-muted)", textAlign: "center" }}>
+        Initialising constellation... (Agent data malformed)
+      </div>
+    );
+  }
+
   const activeAgents = agents.filter(
-    (a) => !a.isPrimary && a.live?.status === "active"
+    (a) => a && !a.isPrimary && a.live?.busy
   );
   const activeCount = activeAgents.length + 1; // +1 for PA (always active)
 
@@ -154,10 +186,10 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
 
             {/* Gradients for each active agent line */}
             {activeAgents.map((agent, i) => {
-              const pos = ORBITAL_POSITIONS[agent.roleId];
-              if (!pos) return null;
+              const pos = getAgentPosition(agent, i);
               const tx = pctToNum(pos.left);
               const ty = pctToNum(pos.top);
+              if (isNaN(tx) || isNaN(ty)) return null; // Safe guard
               return (
                 <linearGradient
                   key={agent.roleId}
@@ -193,8 +225,7 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
 
           {/* Active connection lines + particles */}
           {activeAgents.map((agent, i) => {
-            const pos = ORBITAL_POSITIONS[agent.roleId];
-            if (!pos) return null;
+            const pos = getAgentPosition(agent, i);
             const tx = pctToNum(pos.left);
             const ty = pctToNum(pos.top);
             const dur1 = 2.4 + i * 0.4;
@@ -277,17 +308,18 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
               left: "50%",
             }}
           />
-          <div className="ag-orb-core">🤖</div>
-          <div className="ag-orb-label">Personal Assistant</div>
-          <div className="ag-orb-badge">PRIMARY · AUTH 5</div>
+          <div className="ag-orb-core">
+            <span style={{ fontSize: '32px' }}>💎</span>
+          </div>
+          <div className="ag-orb-label" style={{ color: 'var(--cyan)', fontWeight: 800 }}>TITAN CORE</div>
+          <div className="ag-orb-badge" style={{ borderColor: 'var(--cyan)', color: 'var(--cyan)' }}>PROTOCOL: SISYPHUS v2</div>
         </div>
 
         {/* Orbital Nodes */}
-        {nodeAgents.map((agent) => {
-          const pos = ORBITAL_POSITIONS[agent.roleId];
-          if (!pos) return null;
+        {nodeAgents.map((agent, i) => {
+          const pos = getAgentPosition(agent, i);
 
-          const isActive = agent.live?.status === "active";
+          const isActive = Boolean(agent.live?.busy);
           const ring = pos.ring as "inner" | "outer";
 
           let bubbleClass = "ag-node-bubble";
@@ -340,8 +372,7 @@ export default function OrbitalView({ agents, agentActivity }: Props) {
 
         {/* Floating Detail Card */}
         {selectedAgent && (() => {
-          const pos = ORBITAL_POSITIONS[selectedAgent.roleId];
-          if (!pos) return null;
+          const pos = getAgentPosition(selectedAgent, agents.indexOf(selectedAgent));
 
           const leftPct = pctToNum(pos.left);
           const topPct = pctToNum(pos.top);

@@ -257,7 +257,7 @@
   gap: 0;
 }
 
-.sidebar:hover .sidebar-settings-sub.open {
+.sidebar-settings-sub.open {
   display: flex;
 }
 
@@ -267,8 +267,9 @@
   gap: 8px;
   width: calc(100% - 12px);
   margin: 0 6px;
-  padding: 6px 12px 6px 38px;
+  padding: 8px 12px 8px 12px;
   border-radius: 6px;
+  justify-content: center;
   border: none;
   background: none;
   cursor: pointer;
@@ -282,6 +283,11 @@
 .sidebar-sub-item:hover {
   background: rgba(139,92,246,0.04);
   color: rgba(255,255,255,0.60);
+}
+
+.sidebar:hover .sidebar-sub-item {
+  justify-content: flex-start;
+  padding-left: 38px;
 }
 
 .sidebar-sub-item.active {
