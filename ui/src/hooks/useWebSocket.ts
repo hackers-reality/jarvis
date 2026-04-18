@@ -223,6 +223,7 @@ export function useWebSocket() {
   const toolCallsRef = useRef<ToolCall[]>([]);
   const subAgentEventsRef = useRef<SubAgentEvent[]>([]);
   const voiceCallbacksRef = useRef<VoiceCallbacks | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -373,6 +374,7 @@ export function useWebSocket() {
         }
       } else if (msg.payload?.text) {
         // Text chunk
+        setIsProcessing(false);
         streamBufferRef.current += msg.payload.text;
 
         if (!streamIdRef.current) {
@@ -402,6 +404,7 @@ export function useWebSocket() {
       }
     } else if (msg.type === "status" && msg.payload?.status === "done") {
       // Stream complete
+      setIsProcessing(false);
       if (streamIdRef.current) {
         const finalId = streamIdRef.current;
         const finalToolCalls = toolCallsRef.current;
@@ -513,6 +516,7 @@ export function useWebSocket() {
         },
       ]);
       // Reset stream state on error
+      setIsProcessing(false);
       streamBufferRef.current = "";
       streamIdRef.current = null;
       toolCallsRef.current = [];
@@ -545,6 +549,8 @@ export function useWebSocket() {
         },
       ]);
 
+      setIsProcessing(true);
+
       // Send to server
       const msg: WSMessage = {
         type: "chat",
@@ -566,6 +572,7 @@ export function useWebSocket() {
 
   return {
     messages, isConnected, sendMessage, taskEvents, contentEvents, agentActivity, workflowEvents, goalEvents, siteEvents, notices, dismissNotice,
+    isProcessing,
     wsRef,
     voiceCallbacksRef,
   };

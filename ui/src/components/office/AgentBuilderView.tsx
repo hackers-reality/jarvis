@@ -24,6 +24,7 @@ type BuilderNode = {
     notes: string;
     timeoutSec: number;
     retries: number;
+    override_model?: string;
   };
 };
 
@@ -189,8 +190,8 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
   const stats = useMemo(() => ({
     nodes: nodes.length,
     connectors: edges.length,
-    specialists: nodes.filter((node) => node.type === "specialist").length,
-  }), [edges.length, nodes]);
+    specialists: specialistOptions.length,
+  }), [edges.length, nodes, specialistOptions.length]);
 
   useEffect(() => {
     if (!drag) return undefined;
@@ -221,8 +222,9 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
     const preset = NODE_PRESETS[type];
     const id = `node-${crypto.randomUUID()}`;
     const idx = nodes.length;
-    const specialistId = type === "specialist" ? specialistOptions[0]!.id : preset.config.connector;
-    const specialistName = type === "specialist" ? specialistOptions[0]!.name : preset.title;
+    const firstSpecialist = specialistOptions.length > 0 ? specialistOptions[0] : null;
+    const specialistId = (type === "specialist" && firstSpecialist) ? firstSpecialist.id : preset.config.connector;
+    const specialistName = (type === "specialist" && firstSpecialist) ? firstSpecialist.name : preset.title;
     const col = idx % 4;
     const row = Math.floor(idx / 4);
 
@@ -573,6 +575,24 @@ export default function AgentBuilderView({ specialists }: { specialists?: Specia
                 />
               </label>
             )}
+
+            <label className="ag-builder-field">
+              Model Override
+              <select
+                value={selectedNode.config.override_model || ""}
+                onChange={(e) => updateSelectedNode((node) => ({
+                  ...node,
+                  config: { ...node.config, override_model: e.target.value || undefined },
+                }))}
+              >
+                <option value="">Default (Primary)</option>
+                <option value="anthropic">Anthropic Claude</option>
+                <option value="openai">OpenAI GPT</option>
+                <option value="groq">Groq (Llama)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="ollama">Ollama (Local)</option>
+              </select>
+            </label>
 
             <label className="ag-builder-field">
               Prompt / Instruction

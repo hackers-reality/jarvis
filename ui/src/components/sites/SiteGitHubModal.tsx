@@ -167,7 +167,7 @@ export function SiteGitHubModal({ projectId, projectName, onClose, onConnected }
               value={token}
               onChange={(e) => setToken(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") handleSaveToken(); }}
-              placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+              placeholder="gh_token_YOUR_GITHUB_TOKEN"
               style={inputStyle}
               autoFocus
             />

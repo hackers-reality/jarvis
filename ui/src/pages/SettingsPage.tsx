@@ -9,6 +9,7 @@ import { ChannelsPanel } from "../components/settings/ChannelsPanel";
 import { SidecarPanel } from "../components/settings/SidecarPanel";
 import { UserProfilePanel } from "../components/settings/UserProfilePanel";
 import { ServicePanel } from "../components/settings/ServicePanel";
+import { SpotifyPanel } from "../components/settings/SpotifyPanel";
 
 const SECTION_META: Record<SettingsSection, { title: string; subtitle: string }> = {
   general: { title: "General", subtitle: "Personality, role, and heartbeat configuration" },
@@ -54,7 +55,13 @@ export default function SettingsPage({ section }: { section: SettingsSection }) 
           {section === "profile" && <UserProfilePanel />}
           {section === "llm" && <LLMPanel />}
           {section === "channels" && <ChannelsPanel />}
-          {section === "integrations" && <IntegrationsPanel />}
+          {section === "integrations" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+              <IntegrationsPanel />
+              <SpotifyPanel />
+            </div>
+          )}
+
           {section === "sidecar" && <SidecarPanel />}
         </div>
       </div>

@@ -10,9 +10,10 @@ type ChatPageProps = {
   isConnected: boolean;
   sendMessage: (text: string) => void;
   voice?: UseVoiceReturn;
+  isProcessing?: boolean;
 };
 
-export default function ChatPage({ messages, isConnected, sendMessage, voice }: ChatPageProps) {
+export default function ChatPage({ messages, isConnected, sendMessage, voice, isProcessing }: ChatPageProps) {
   const voiceStatus = voice
     ? voice.voiceState === "speaking" || voice.ttsAudioPlaying
       ? "JARVIS is speaking..."
@@ -75,7 +76,7 @@ export default function ChatPage({ messages, isConnected, sendMessage, voice }: 
       )}
 
       {/* Messages */}
-      <MessageList messages={messages} />
+      <MessageList messages={messages} isProcessing={isProcessing} />
 
       {/* Input */}
       <ChatInput

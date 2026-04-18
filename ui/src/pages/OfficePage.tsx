@@ -70,12 +70,13 @@ export default function OfficePage({ agentActivity }: Props) {
   const fetchSpecialists = useCallback(async () => {
     try {
       const data = await api<{ specialists: SpecialistInfo[] }>("/api/agents/specialists");
-      setSpecialists(data.specialists);
-      if (data.specialists.length > 0) {
+      const specs = data?.specialists || [];
+      setSpecialists(specs);
+      if (specs.length > 0) {
         setSelectedSpecialist((prev) => (
-          data.specialists.some((specialist) => specialist.id === prev)
+          specs.some((specialist) => specialist.id === prev)
             ? prev
-            : data.specialists[0]!.id
+            : specs[0]!.id
         ));
       }
     } catch {
@@ -90,21 +91,40 @@ export default function OfficePage({ agentActivity }: Props) {
     return () => clearInterval(interval);
   }, [fetchAgents, fetchSpecialists]);
 
-  function getLive(roleId: string): LiveAgentInfo | null {
+  const getLive = useCallback((roleId: string): LiveAgentInfo | null => {
+    if (!Array.isArray(liveAgents)) return null;
     return (
       liveAgents.find(
         (a) =>
-          a.role?.id === roleId ||
-          a.role?.name?.toLowerCase().replace(/\s+/g, "-") === roleId
+          a?.role?.id === roleId ||
+          a?.role?.name?.toLowerCase().replace(/\s+/g, "-") === roleId
       ) ?? null
     );
-  }
+  }, [liveAgents]);
 
-  // Build combined agent list
-  const allAgents: AgentWithLive[] = AGENT_ROSTER.map((r) => ({
-    ...r,
-    live: getLive(r.roleId),
-  }));
+  // Build combined agent list — merge hardcoded roster with discovered specialists
+  const allAgents: AgentWithLive[] = useMemo(() => {
+    // 1. Start with the hardcoded roster
+    const base = AGENT_ROSTER.map((r) => ({
+      ...r,
+      live: getLive(r.roleId),
+    }));
+
+    // 2. Add specialists from API that aren't in the roster
+    const discovered = (specialists || []).filter(
+      (s) => s?.id && !AGENT_ROSTER.some((r) => r.roleId === s.id)
+    ).map((s) => ({
+      roleId: s.id,
+      name: s.name || "Specialist",
+      emoji: "\u{1F916}", // Default robot emoji for new specialists
+      authority: s.authority_level || 0,
+      tools: (s.tools || []).length,
+      avatarBg: (s as any).avatarBg || "ag-avatar-violet", // Default color
+      live: getLive(s.id),
+    }));
+
+    return [...base, ...discovered];
+  }, [specialists, getLive]);
 
   // Apply search filter
   const filteredAgents = search.trim()
@@ -115,7 +135,7 @@ export default function OfficePage({ agentActivity }: Props) {
 
   // Stats
   const activeCount = allAgents.filter((agent) => isAgentActive(agent)).length;
-  const totalCount = AGENT_ROSTER.length;
+  const totalCount = allAgents.length;
 
   const selectedSpecialistMeta = specialists.find((specialist) => specialist.id === selectedSpecialist) ?? null;
 

@@ -281,7 +281,7 @@ export function App() {
         ) : null}
         <React.Suspense fallback={<PageFallback />}>
           {route === "dashboard" && <DashboardPage messages={ws.messages} isConnected={ws.isConnected} voice={voice} agentActivity={ws.agentActivity} goalEvents={ws.goalEvents} workflowEvents={ws.workflowEvents} />}
-          {route === "chat" && <ChatPage messages={ws.messages} isConnected={ws.isConnected} sendMessage={ws.sendMessage} voice={voice} />}
+          {route === "chat" && <ChatPage messages={ws.messages} isConnected={ws.isConnected} sendMessage={ws.sendMessage} voice={voice} isProcessing={ws.isProcessing} />}
           {route === "tasks" && <TasksPage taskEvents={ws.taskEvents} />}
           {route === "pipeline" && <PipelinePage contentEvents={ws.contentEvents} sendMessage={ws.sendMessage} />}
           {route === "memory" && <MemoryPage />}
