@@ -57,15 +57,6 @@ export class LLMManager {
     return [...this.providers.keys()];
   }
 
-  private getProviderSequence(primaryOverride?: string | null): string[] {
-    const primary = primaryOverride && this.providers.has(primaryOverride) ? primaryOverride : this.primaryProvider;
-    return [primary, ...this.fallbackChain.filter((name) => name !== primary)];
-  }
-
-  private formatFailure(providerName: string, errors: string[]): string {
-    return `Provider '${providerName}' failed after ${LLMManager.MAX_RETRIES_PER_PROVIDER} attempts:\n${errors.map((error) => `  ${error}`).join('\n')}`;
-  }
-
   /**
    * Atomically replace all providers. Safe for in-flight requests because
    * JS is single-threaded and the map assignment is atomic.
@@ -100,16 +91,25 @@ export class LLMManager {
    */
   private shouldRetry(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
-
+    
     const msg = error.message.toLowerCase();
     // Retry on network/timeout errors, not on auth/validation errors
-    return msg.includes('timeout') ||
-      msg.includes('econnrefused') ||
-      msg.includes('enotfound') ||
-      msg.includes('network') ||
-      msg.includes('temporarily unavailable') ||
-      msg.includes('429') ||  // rate limit
-      msg.includes('503');    // service unavailable
+    return msg.includes('timeout') || 
+           msg.includes('econnrefused') || 
+           msg.includes('enotfound') ||
+           msg.includes('network') ||
+           msg.includes('temporarily unavailable') ||
+           msg.includes('429') ||  // rate limit
+           msg.includes('503');    // service unavailable
+  }
+
+  private getProviderSequence(primaryOverride?: string | null): string[] {
+    const primary = primaryOverride && this.providers.has(primaryOverride) ? primaryOverride : this.primaryProvider;
+    return [primary, ...this.fallbackChain.filter((name) => name !== primary)];
+  }
+
+  private formatFailure(providerName: string, errors: string[]): string {
+    return `Provider '${providerName}' failed after ${LLMManager.MAX_RETRIES_PER_PROVIDER} attempts:\n${errors.map((error) => `  ${error}`).join('\n')}`;
   }
 
   /**

@@ -1,6 +1,7 @@
 import YAML from 'yaml';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { mkdirSync } from 'node:fs';
 import type { JarvisConfig } from './types.ts';
 import { DEFAULT_CONFIG } from './types.ts';
 
@@ -96,7 +97,10 @@ function applyEnvOverrides(config: JarvisConfig): void {
 }
 
 export async function loadConfig(configPath?: string): Promise<JarvisConfig> {
-  const path = configPath || expandTilde('~/.jarvis/config.yaml');
+  const defaultPath = join(homedir(), '.jarvis', 'config.yaml');
+  const path = configPath || (process.env.JARVIS_HOME
+    ? join(process.env.JARVIS_HOME, 'config.yaml')
+    : defaultPath);
 
   const file = Bun.file(path);
   const exists = await file.exists();
@@ -135,9 +139,15 @@ export async function saveConfig(
   config: JarvisConfig,
   configPath?: string
 ): Promise<void> {
-  const path = configPath || expandTilde('~/.jarvis/config.yaml');
+  const defaultPath = join(homedir(), '.jarvis', 'config.yaml');
+  const path = configPath || (process.env.JARVIS_HOME
+    ? join(process.env.JARVIS_HOME, 'config.yaml')
+    : defaultPath);
 
   try {
+    const dir = dirname(path);
+    mkdirSync(dir, { recursive: true });
+    
     const yaml = YAML.stringify(config, {
       indent: 2,
       lineWidth: 100,

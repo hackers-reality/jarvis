@@ -299,8 +299,8 @@ llm:
 
 Then set in your shell:
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
+export ANTHROPIC_API_KEY="key-ant-..."
+export OPENAI_API_KEY="key-..."
 ```
 
 Note: The loader doesn't currently support env var substitution, but you can implement it with:

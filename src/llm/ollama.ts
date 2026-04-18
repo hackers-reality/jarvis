@@ -74,17 +74,17 @@ type OllamaModelInfo = {
 export class OllamaProvider implements LLMProvider {
   name = 'ollama';
   private baseUrl: string;
+  private apiKey: string;
   private defaultModel: string;
 
-  constructor(baseUrl = 'http://localhost:11434', defaultModel = 'llama3') {
-    this.baseUrl = baseUrl.replace(/\/$/, ''); // Remove trailing slash
+  constructor(baseUrl = 'http://localhost:11434', apiKey = '', defaultModel = 'llama3') {
+    this.baseUrl = baseUrl.replace(/\/$/, '').replace(/\/api$/, ''); // Normalize base URL
+    this.apiKey = apiKey;
     this.defaultModel = defaultModel;
   }
 
   async chat(messages: LLMMessage[], options: LLMOptions = {}): Promise<LLMResponse> {
     const { model = this.defaultModel, temperature, tools, tool_choice } = options;
-    
-    // Compact history for Ollama's context limits
     const budget = calculateHistoryBudget(32000);
     const compactedMessages = compactHistory(messages, budget);
 
@@ -106,6 +106,7 @@ export class OllamaProvider implements LLMProvider {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(this.apiKey ? { 'Authorization': `Bearer ${this.apiKey}` } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -121,8 +122,6 @@ export class OllamaProvider implements LLMProvider {
 
   async *stream(messages: LLMMessage[], options: LLMOptions = {}): AsyncIterable<LLMStreamEvent> {
     const { model = this.defaultModel, temperature, tools, tool_choice } = options;
-    
-    // Compact history for Ollama's context limits
     const budget = calculateHistoryBudget(32000);
     const compactedMessages = compactHistory(messages, budget);
 
@@ -144,6 +143,7 @@ export class OllamaProvider implements LLMProvider {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(this.apiKey ? { 'Authorization': `Bearer ${this.apiKey}` } : {}),
       },
       body: JSON.stringify(body),
     });
@@ -230,7 +230,9 @@ export class OllamaProvider implements LLMProvider {
 
   async listModels(): Promise<string[]> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetch(`${this.baseUrl}/api/tags`, {
+        headers: this.apiKey ? { 'Authorization': `Bearer ${this.apiKey}` } : {},
+      });
 
       if (!response.ok) {
         throw new Error(`Failed to list models: ${response.status}`);
@@ -239,7 +241,6 @@ export class OllamaProvider implements LLMProvider {
       const data = await response.json() as { models: OllamaModelInfo[] };
       return data.models.map(m => m.name).sort();
     } catch (err) {
-      // Fallback to common models if API call fails
       return ['llama3', 'llama2', 'mistral', 'mixtral', 'codellama'];
     }
   }
@@ -253,7 +254,6 @@ export class OllamaProvider implements LLMProvider {
         };
       }
 
-      // ContentBlock[] — extract text and images separately
       let text = '';
       const images: string[] = [];
 
