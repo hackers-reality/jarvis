@@ -5,7 +5,8 @@
 #
 # Build:   docker build -t jarvis .
 # Build with version: docker build --build-arg VERSION=0.3.1 -t jarvis .
-# Run:     docker run -p 3142:3142 -v jarvis-data:/data -e JARVIS_API_KEY=sk-... jarvis
+# Run:     docker run -p 3142:3142 --add-host=host.docker.internal:host-gateway -v jarvis-data:/data jarvis
+# Note:    Browser history and desktop control are routed via the Sidecar on host.docker.internal.
 #
 # ─────────────────────────────────────────────────────────────────────
 
@@ -13,7 +14,7 @@
 ARG VERSION
 
 # ─── Stage 1: Install dependencies ─────────────────────────────────
-FROM oven/bun:1 AS deps
+FROM oven/bun:1.1.27 AS deps
 
 WORKDIR /app
 
@@ -61,13 +62,14 @@ RUN mkdir -p ui/public/openwakeword/models ui/public/ort && \
 RUN bun build ui/index.html --outdir ui/dist
 
 # ─── Stage 3: Production image ─────────────────────────────────────
-FROM oven/bun:1-slim AS production
+FROM oven/bun:1.1.27-slim AS production
 
 # ca-certificates: HTTPS calls to LLM APIs
 # git: required by the Site Builder for project version control
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates git make procps libc-dev && \
+    apt-get install -y --no-install-recommends ca-certificates git make procps libc-dev libsqlite3-dev util-linux && \
     rm -rf /var/lib/apt/lists/*
+
 
 WORKDIR /app
 
@@ -78,11 +80,14 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/src ./src
 COPY --from=build /app/bin ./bin
 COPY --from=build /app/roles ./roles
+COPY --from=build /app/webapp-templates ./webapp-templates
 COPY --from=build /app/ui/dist ./ui/dist
 COPY --from=build /app/ui/public ./ui/public
 # Copy version-stamped package.json from build stage (not the original)
 COPY --from=build /app/package.json ./
 COPY tsconfig.json ./
+COPY entrypoint.sh ./
+RUN chmod +x entrypoint.sh
 
 # Install jarvis as a global command
 # Note: `bun link` can't be used here — it symlinks through /root/.bun/ which
@@ -101,10 +106,7 @@ EXPOSE 3142
 
 VOLUME ["/data"]
 
-USER jarvis
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD bun -e "fetch('http://localhost:3142/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-
-ENTRYPOINT ["jarvis"]
+# Entrypoint handles permission fixes on mounted volumes
+ENTRYPOINT ["/app/entrypoint.sh"]
+# Use host.docker.internal to reach the host Sidecar for Zero-Mount intelligence
 CMD ["start", "--no-open", "--data-dir", "/data", "--no-local-tools"]
