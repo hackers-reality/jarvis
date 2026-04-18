@@ -733,7 +733,6 @@ export async function runOnboard(): Promise<void> {
         keepaliveStarted = await startAutostartService();
       }
     }
-
     if (userProfileAnswers && Object.keys(userProfileAnswers).length > 0) {
       try {
         initDatabase(resolveOnboardDbPath(config));
