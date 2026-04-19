@@ -1,0 +1,18 @@
+services:
+  jarvis:
+    build: .
+    container_name: jarvis
+    ports:
+      - "3142:3142"
+    volumes:
+      - ./data:/data
+    environment:
+      - JARVIS_HOME=/data
+      - NODE_ENV=production
+    networks:
+      - jarvis-net
+    restart: unless-stopped
+
+networks:
+  jarvis-net:
+    external: true

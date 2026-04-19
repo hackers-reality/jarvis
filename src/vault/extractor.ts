@@ -3,6 +3,7 @@ import { createEntity, findEntities } from './entities.ts';
 import { createFact } from './facts.ts';
 import { createRelationship } from './relationships.ts';
 import { createCommitment } from './commitments.ts';
+import { embedText, storeVector } from './vectors.ts';
 
 export type ExtractionResult = {
   entities: Array<{ name: string; type: string; properties?: Record<string, unknown> }>;
@@ -160,6 +161,15 @@ export async function extractAndStore(
 
     // Parse response
     const extraction = parseExtractionResponse(response.content);
+
+    // Index semantic memory for the turn
+    try {
+      const turnContent = `USER: ${userMessage}\nASSISTANT: ${assistantResponse}`;
+      const embedding = await embedText(turnContent);
+      storeVector('conversation_turn', generateId(), embedding, turnContent);
+    } catch (err) {
+      console.error('[Extractor] Failed to index semantic turn:', err);
+    }
 
     // Store entities
     const entityMap = new Map<string, string>(); // name -> id

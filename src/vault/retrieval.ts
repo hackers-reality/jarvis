@@ -11,6 +11,7 @@ import { searchEntitiesByName, type Entity } from './entities.ts';
 import { findFacts, type Fact } from './facts.ts';
 import { getEntityRelationships } from './relationships.ts';
 import { USER_PROFILE_VAULT_SOURCE } from './user-profile.ts';
+import { embedText, findSimilar } from './vectors.ts';
 
 // Common stopwords to filter from search queries
 const STOPWORDS = new Set([
@@ -187,12 +188,46 @@ export function formatKnowledgeContext(profiles: EntityProfile[]): string {
  * Main entry point: get formatted knowledge context for a user message.
  * Returns empty string if no relevant knowledge found.
  */
-export function getKnowledgeForMessage(message: string): string {
+export async function getKnowledgeForMessage(message: string): Promise<string> {
   try {
     const profiles = retrieveForMessage(message);
-    return formatKnowledgeContext(profiles);
+    const graphContext = formatKnowledgeContext(profiles);
+    
+    const semanticContext = await getSemanticHistory(message);
+    
+    const sections: string[] = [];
+    if (graphContext) {
+      sections.push("### Graph Knowledge\n" + graphContext);
+    }
+    if (semanticContext) {
+      sections.push("### Relevant Semantic Memory\n" + semanticContext);
+    }
+
+    return sections.join('\n\n');
   } catch (err) {
     console.error('[Retrieval] Error querying vault:', err);
+    return '';
+  }
+}
+
+/**
+ * Retrieve similar conversation turns from the semantic vector store.
+ */
+async function getSemanticHistory(message: string): Promise<string> {
+  try {
+    const embedding = await embedText(message);
+    const similar = findSimilar(embedding, 3); // Get top 3 similar turns
+
+    const results = similar
+      .filter(match => match.similarity > 0.7) // Only include relevant history
+      .map(match => match.content)
+      .filter(content => content !== null) as string[];
+
+    if (results.length === 0) return '';
+
+    return results.join('\n---\n');
+  } catch (err) {
+    console.error('[Retrieval] Semantic history search failed:', err);
     return '';
   }
 }

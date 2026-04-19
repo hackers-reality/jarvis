@@ -195,6 +195,7 @@ function createTables(db: Database): void {
       id TEXT PRIMARY KEY,
       ref_type TEXT,
       ref_id TEXT,
+      content TEXT,
       embedding BLOB,
       model TEXT,
       created_at INTEGER NOT NULL

@@ -539,7 +539,7 @@ export class AgentService implements Service, IAgentService {
     // Retrieve relevant knowledge from vault based on user message
     if (userMessage) {
       try {
-        const knowledge = getKnowledgeForMessage(userMessage);
+        const knowledge = await getKnowledgeForMessage(userMessage);
         if (knowledge) {
           context.knowledgeContext = knowledge;
         }
