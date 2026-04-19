@@ -23,7 +23,7 @@ COPY package.json bun.lock ./
 COPY scripts/ scripts/
 
 # Install all dependencies (includes devDependencies needed for UI build)
-RUN bun install --frozen-lockfile
+RUN bun install
 
 # ─── Stage 2: Build UI and copy models ─────────────────────────────
 FROM deps AS build
@@ -65,8 +65,9 @@ FROM oven/bun:1-slim AS production
 
 # ca-certificates: HTTPS calls to LLM APIs
 # git: required by the Site Builder for project version control
+# dos2unix: fix Windows line endings on entrypoint scripts
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates git make procps libc-dev && \
+    apt-get install -y --no-install-recommends ca-certificates git make procps libc-dev dos2unix && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -88,7 +89,9 @@ COPY tsconfig.json ./
 # Note: `bun link` can't be used here — it symlinks through /root/.bun/ which
 # is inaccessible to the non-root jarvis user. Direct symlink works because
 # Bun resolves import.meta.dir through symlinks to the real path (/app/bin).
-RUN ln -s /app/bin/jarvis.ts /usr/local/bin/jarvis
+# Create symlink for easier execution
+RUN ln -s /app/bin/jarvis.ts /usr/local/bin/jarvis && \
+    find bin/ -type f -exec dos2unix {} +
 
 # Create non-root user and data directory
 RUN groupadd -r jarvis && useradd -r -g jarvis -d /data -s /bin/bash jarvis && \

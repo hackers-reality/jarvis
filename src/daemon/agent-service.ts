@@ -243,11 +243,11 @@ export class AgentService implements Service, IAgentService {
   /**
    * Stream a message through the agent. Returns a stream and an onComplete callback.
    */
-  streamMessage(text: string, channel: string = 'websocket', siteContext?: string): {
+  async streamMessage(text: string, channel: string = 'websocket', siteContext?: string): Promise<{
     stream: AsyncIterable<LLMStreamEvent>;
     onComplete: (fullText: string) => Promise<void>;
-  } {
-    let systemPrompt = this.buildFullSystemPrompt(channel, text);
+  }> {
+    let systemPrompt = await this.buildFullSystemPrompt(channel, text);
     if (siteContext) {
       systemPrompt += '\n\n' + siteContext;
     }
@@ -274,7 +274,7 @@ export class AgentService implements Service, IAgentService {
    * Non-streaming message handler. Returns full response string.
    */
   async handleMessage(text: string, channel: string = 'websocket'): Promise<string> {
-    const systemPrompt = this.buildFullSystemPrompt(channel, text);
+    const systemPrompt = await this.buildFullSystemPrompt(channel, text);
 
     const response = await this.orchestrator.processMessage(systemPrompt, text);
 
@@ -299,7 +299,7 @@ export class AgentService implements Service, IAgentService {
   async handleHeartbeat(coalescedEvents?: string): Promise<string | null> {
     if (!this.role) return null;
 
-    const systemPrompt = this.buildHeartbeatPrompt(coalescedEvents);
+    const systemPrompt = await this.buildHeartbeatPrompt(coalescedEvents);
 
     // Build the heartbeat "user message" that triggers the agent
     const parts: string[] = ['[HEARTBEAT] Periodic check-in. Review your responsibilities and take action.'];
@@ -448,11 +448,11 @@ export class AgentService implements Service, IAgentService {
     );
   }
 
-  private buildFullSystemPrompt(channel: string, userMessage?: string): string {
+  private async buildFullSystemPrompt(channel: string, userMessage?: string): Promise<string> {
     if (!this.role) return '';
 
     // Build prompt context with live data + vault knowledge
-    const context = this.buildPromptContext(userMessage);
+    const context = await this.buildPromptContext(userMessage);
 
     // Build base system prompt from role + context
     const rolePrompt = buildSystemPrompt(this.role, context);
@@ -465,10 +465,10 @@ export class AgentService implements Service, IAgentService {
     return `${rolePrompt}\n\n${personalityPrompt}`;
   }
 
-  private buildHeartbeatPrompt(coalescedEvents?: string): string {
+  private async buildHeartbeatPrompt(coalescedEvents?: string): Promise<string> {
     if (!this.role) return '';
 
-    const context = this.buildPromptContext();
+    const context = await this.buildPromptContext();
     const rolePrompt = buildSystemPrompt(this.role, context);
 
     const parts = [rolePrompt, '', '# Heartbeat Check', this.role.heartbeat_instructions];
@@ -506,7 +506,7 @@ export class AgentService implements Service, IAgentService {
     return parts.join('\n');
   }
 
-  private buildPromptContext(userMessage?: string): PromptContext {
+  private async buildPromptContext(userMessage?: string): Promise<PromptContext> {
     // Check if any sidecars are enrolled (cheap DB query, controls tool guide content)
     let hasSidecars = false;
     try {
